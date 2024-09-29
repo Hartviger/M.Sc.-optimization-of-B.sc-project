@@ -6,6 +6,7 @@ This code is a copy of the main MetaboLink code with an added heatmap function. 
 
 To try it out, follow this link:
 MetaboLink Test Server
+https://jakobhartvigapps.shinyapps.io/Metabolink_test_server/
 
 Instructions:
 
