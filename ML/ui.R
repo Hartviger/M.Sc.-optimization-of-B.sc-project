@@ -421,7 +421,9 @@ shinyUI(dashboardPage(
                                            tableOutput("denominator_table"),
                                            conditionalPanel(
                                              condition = "input.run_process > 0", 
-                                             actionButton("show_lipid_info", "Show Lipid Summary")
+                                             actionButton("show_lipid_info", "Show Lipid Summary"),
+                                             actionButton("show_lipid_cal", "Show Calculation Summary")
+                                             
                                            )
                                     )
                                   ))
@@ -444,6 +446,7 @@ shinyUI(dashboardPage(
                        
                        # HEATMAP VISUALIZATION
                        tabPanel("Lipid Visualization",
+                                
                                 box(
                                   column(width = 8,
                                          uiOutput("select_lipid_ui"),
@@ -473,11 +476,14 @@ shinyUI(dashboardPage(
                        
                        tabPanel(
                          "Bubble plot of data",
-                         #checkboxInput("swap_logfc_pvalue", "Swap logFC and p-value", value = FALSE),
-                         #helpText("Bubble size represents p-value ranges. Color indicates logFC."),
+
                          uiOutput("bubble_plot_ui"),
-                         
+                         tags$div(
+                           class = "alert-warning", # You can change this to 'alert-success', 'alert-warning', etc.
+                           uiOutput("table_message")
+                         )
                        )
+                       
                        
                        
                        

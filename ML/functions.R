@@ -276,7 +276,7 @@ pcaplot <- function(data, class, islog) {
 
 # Lipid Heatmap
 # Grouping the data
-process_data <- function(sequence, data) {
+process_lipid_data <- function(sequence, data) {
   # Initialize an empty list to store the sample names by group and other information
   results <- list()
   
@@ -355,6 +355,7 @@ create_grouped_data_frames <- function(sequence, data) {
 
 
 
+
 calculate_means_for_grouped_data <- function(grouped_data_frames) {
   # Initialize a new list to store the modified data frames
   new_grouped_data_frames <- list()
@@ -378,6 +379,9 @@ calculate_means_for_grouped_data <- function(grouped_data_frames) {
   # Return the new list of grouped data frames with means calculated
   return(new_grouped_data_frames)
 }
+
+
+
 
 
 # Function to group lipids by their class prefix (e.g., "CAR", "LP", etc.)
