@@ -1,0 +1,12 @@
+name: MetaboLink_test_for_ida
+title: MetaboLink-main
+username: jakobhartvigapps
+account: jakobhartvigapps
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 13223918
+bundleId: 9319647
+url: https://jakobhartvigapps.shinyapps.io/MetaboLink_test_for_ida/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE

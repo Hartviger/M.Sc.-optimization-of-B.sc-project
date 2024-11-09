@@ -1,20 +1,22 @@
 shinyServer(function(session, input, output) {
   options(shiny.maxRequestSize = 30 * 1024^2)
   
-  ## General
-  rv <- reactiveValues(data = list(), sequence = list(), activeFile = NULL, 
-                       tmpData = NULL, tmpSequence = NULL, 
-                       choices = NULL, drift_plot_select = 1, info = vector("character"))
-  
-  ## Statistics
-  st <- reactiveValues(stats = list(), sequence = list(), results = list(),
-                       comparisons = list(), colcomp = list())
+  # Global variables
+  rv <- reactiveValues(data = list(), sequence = list(), activeFile = NULL, results = list(),
+                       tmpData = NULL, tmpSequence = NULL, choices = NULL, drift_plot_select = 1, info = vector("character"))
   
   userConfirmation <- reactiveVal(FALSE)
+  disable("upload")
   
-  rankings <- read.csv("./csvfiles/rankings.csv", stringsAsFactors = FALSE)
+  rankings_merge <- data.frame(
+    name = c("high", "medium", "low"),
+    priority = c(1, 2, 3)
+  )
   
-  observeEvent(list(c(input$sequence, input$example, input$submit)), {
+  massCorrection <- read.csv("./csvfiles/adducts.csv")
+  
+  # Window/panel selection
+  observeEvent(list(c(input$sequence, input$example, input$upload)), {
     windowselect("sequence")
   }, ignoreInit = T
   )
@@ -26,25 +28,81 @@ shinyServer(function(session, input, output) {
   })
   observeEvent(input$statistics_button, {
     windowselect("statistics")
-    updateSelectInput(session, "group1", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'class']))
-    updateSelectInput(session, "group2", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'class']))
-    updateSelectInput(session, "time1", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'time']))
-    updateSelectInput(session, "time2", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'time']))
   })
   
-  # Functions
+  
+  ### Functions ###
   
   initializeVariables <- function() {
-    st$stats[[length(st$stats) + 1]] <- data.frame()
-    st$sequence[[length(st$stats) + 1]] <- data.frame()
-    st$results[[length(st$results) + 1]] <- list()
-    st$comparisons[[length(st$comparisons) + 1]] <- vector("character")
-    st$colcomp[[length(st$colcomp) + 1]] <- vector("numeric")
+    rv$results[[length(rv$results) + 1]] <- list()
   }
   
-  observeEvent(input$submit, {
+  createDownloadHandler <- function(type, fileExtension, dataFunc) {
+    function(x) {
+      output[[paste0("dwn_", type, x)]] <- downloadHandler(
+        filename = function() {
+          paste0(names(rv$data[x]), "_", type, fileExtension)
+        },
+        content = function(file) {
+          dataToWrite <- dataFunc(rv, x)  # Pass rv and x to the data function
+          if(fileExtension == ".csv") {
+            write.csv(dataToWrite, file, row.names = FALSE)
+          } else if(fileExtension == ".xlsx") {
+            write_xlsx(dataToWrite, file)
+          } else if(fileExtension == ".txt") {
+            writeLines(dataToWrite, file)
+          }
+        }
+      )
+    }
+  }
+  
+  renderDownloadUI <- function(idPrefix, labelSuffix) {
+    renderUI({
+      lapply(seq_len(length(rv$choices)), function(x) {
+        fluidRow(column(12, downloadLink(paste0(idPrefix, x), paste0(rv$choices[x], labelSuffix))))
+      })
+    })
+  }
+  
+  updateDataAndSequence <- function(notificationMessage, newFileInput, suffix, additionalInfo = NULL) {
+    if (is.null(rv$tmpData)) {
+      showNotification(notificationMessage, type = "error")
+    } else {
+      if (newFileInput) {
+        newIndex <- length(rv$data) + 1
+        rv$data[[newIndex]] <- rv$tmpData
+        rv$sequence[[newIndex]] <- rv$tmpSequence
+        newName <- paste0(names(rv$data)[rv$activeFile], suffix)
+        names(rv$data)[newIndex] <- newName
+        if (!is.null(additionalInfo)) {
+          rv$info[newIndex] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), additionalInfo, "\n")
+        }
+        initializeVariables()
+        rv$activeFile <- newIndex
+      } else {
+        rv$data[[rv$activeFile]] <- rv$tmpData
+        rv$sequence[[rv$activeFile]] <- rv$tmpSequence
+        names(rv$data)[rv$activeFile] <- paste0(names(rv$data)[rv$activeFile], suffix)
+        if (!is.null(additionalInfo)) {
+          rv$info[rv$activeFile] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), additionalInfo, "\n")
+        }
+      }
+      rv$choices <- paste(seq_along(rv$data), ": ", names(rv$data))
+      rv$tmpData <- NULL
+      rv$tmpSequence <- NULL
+    }
+  }
+  
+  
+  observeEvent(input$inputFile, { # Ensure file is uploaded before pressing Upload button
+    inputFile <<- read.csv(input$inputFile$datapath, header = 1, stringsAsFactors = F, check.names = FALSE)
+    enable("upload")
+  })
+  
+  observeEvent(input$upload, {
     shinyCatch({
-      inputFile <- read.csv(input$inputFile$datapath, header = 1, stringsAsFactors = F, check.names = FALSE)
+      #inputFile <- read.csv(input$inputFile$datapath, header = 1, stringsAsFactors = F, check.names = FALSE)
       if(input$fileType == "Samples in rows") {
         inputFile <- t(inputFile)
       }
@@ -55,17 +113,15 @@ shinyServer(function(session, input, output) {
       sendSweetAlert(session, title = "Error", text = paste("Duplicate columns found."), type = "error")
     } else {
       labels <- identifyLabels(inputFile)
-      #checkColumns(colnames(inputFile), labels)
-      batch <- NA
-      order <- NA
-      class <- NA
-      time <- NA
-      paired <- NA
       initializeVariables()
-      rv$sequence[[length(rv$sequence) + 1]] <- data.frame(labels, batch, order, class, time, paired)
+      rv$sequence[[length(rv$sequence) + 1]] <- data.frame(labels, batch = NA,
+                                                           order = NA, group = NA,
+                                                           time = NA, paired = NA,
+                                                           amount = NA)
       rv$data[[length(rv$data) + 1]] <- inputFile
       names(rv$data)[length(rv$data)] <- substr(input$inputFile$name, 1, nchar(input$inputFile$name) - 4)
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
+      rv$choices <- paste(seq_along(rv$data), ": ", names(rv$data))
+      rv$activeFile <- length(rv$data)
       updateTabItems(session, "tabs", selected = "Datainput")
       show("buttons")
     }
@@ -86,6 +142,25 @@ shinyServer(function(session, input, output) {
     row.names(sequence) <- sequence[, 1]
     sequence <- sequence[, -1]
     rv$sequence[[rv$activeFile]] <- sequence
+    
+    if(any(grepl("[^[:alnum:]]", sequence$group))) {
+      showModal(
+        modalDialog(
+          title = "Invalid group names", size = "m", easyClose = TRUE,
+          footer = list(actionButton("group_name_format", "Format names"), modalButton("Dismiss")),
+          fluidRow(
+            column(12, p("Invalid group names found. Group names must be alphanumeric and not include spaces."))
+          )
+        )
+      )
+    }
+  })
+  
+  observeEvent(input$group_name_format, {
+    sequence <- rv$sequence[[rv$activeFile]]
+    sequence$group <- gsub("[^[:alnum:]]", "", sequence$group)
+    rv$sequence[[rv$activeFile]] <- sequence
+    removeModal()
   })
   
   observeEvent(input$reuseSequence, {
@@ -101,11 +176,11 @@ shinyServer(function(session, input, output) {
     rv$sequence[[rv$activeFile]] <- sequence
   })
   
-  observeEvent(input$editSequence, {
+  observeEvent(input$editColumns, {
     showModal(
       modalDialog(
         title = "Edit columns", size = "s", easyClose = TRUE,
-        footer = list(actionButton("seq_edit_confirm", "Confirm"), modalButton("Dismiss")),
+        footer = list(actionButton("edit_cols_confirm", "Confirm"), modalButton("Dismiss")),
         fluidRow(
           column(width = 9, h4("Column name")),
           column(width = 3, style = "text-align: left;", h4("Keep"))
@@ -114,11 +189,11 @@ shinyServer(function(session, input, output) {
           fluidRow(
             column(
               width = 9,
-              textInput(paste0("seq_edit_name", x), NULL, value = colnames(rv$data[[rv$activeFile]])[x])
+              textInput(paste0("column_edit_name", x), NULL, value = colnames(rv$data[[rv$activeFile]])[x])
             ),
             column(
               width = 3, style = "text-align: center;",
-              prettyCheckbox(paste0("seq_edit_keep", x), NULL, status = "info", value = T)
+              prettyCheckbox(paste0("columns_to_keep", x), NULL, status = "info", value = T)
             ),
           )
         })
@@ -126,73 +201,86 @@ shinyServer(function(session, input, output) {
     )
   })
   
+  observeEvent(input$edit_cols_confirm, {
+    ncol <- ncol(rv$data[[rv$activeFile]])
+    column_names <- character()
+    column_names <- sapply(seq(ncol), function(x) {
+      input[[paste0("column_edit_name", x)]]
+    })
+    if(!checkDuplicates(column_names)) {
+      isolate(colnames(rv$data[[rv$activeFile]]) <- column_names)
+      isolate(row.names(rv$sequence[[rv$activeFile]]) <- column_names)
+      keep <- sapply(seq(ncol), function(x) input[[paste0("columns_to_keep", x)]])
+      rv$data[[rv$activeFile]] <- rv$data[[rv$activeFile]][, keep]
+      rv$sequence[[rv$activeFile]] <- rv$sequence[[rv$activeFile]][keep, ]
+    }
+    removeModal()
+  })
+  
   observeEvent(input$editGroups, {
+    sequence <- rv$sequence[[rv$activeFile]]
+    unique_groups <- unique(na.omit(sequence[, 4]))
+    # Generate UI elements for each group
+    group_ui_elements <- lapply(seq(unique_groups), function(x) {
+      group <- unique_groups[x]
+      fluidRow(
+        column(3, h5(group)),
+        column(9,
+               textInput(paste0("edit_nickname", group), NULL, value = NULL)
+        ),
+      )
+    })
     showModal(
       modalDialog(
         title = "Edit Group Nicknames", size = "s", easyClose = TRUE,
         footer = list(actionButton("group_edit_confirm", "Confirm"), modalButton("Dismiss")),
         fluidRow(
-          column(width = 3, h4("Group")),
-          column(width = 9, h4("Nickname"))
+          column(3, h4("Group")),
+          column(9, h4("Nickname"))
         ), 
-        lapply(seq(unique(rv$sequence[[rv$activeFile]][, 4][!is.na(rv$sequence[[rv$activeFile]][, 4])])), function(x) {
-          group <- sort(unique(rv$sequence[[rv$activeFile]][, 4][!is.na(rv$sequence[[rv$activeFile]][, 4])]))[x]
-          fluidRow(
-            column(width = 2, h5(stri_extract_first_regex(group, "[0-9]+"))),
-            column(
-              width = 10,
-              textInput(paste0("edit_nickname", x), NULL, value = NULL)
-            ),
-          )
-        }),
+        do.call(tagList, group_ui_elements)
       )
     )
   })
   
-  # Duplicates not allowed
-  observeEvent(input$seq_edit_confirm, {
-    # sapply(seq(ncol(rv$data[[rv$activeFile]])), function(x) {
-    #   isolate(colnames(rv$data[[rv$activeFile]])[x] <- input[[paste0("seq_edit_name", x)]])
-    #   isolate(row.names(rv$sequence[[rv$activeFile]])[x] <- input[[paste0("seq_edit_name", x)]])
-    # })
-    keep <- sapply(seq(ncol(rv$data[[rv$activeFile]])), function(x) input[[paste0("seq_edit_keep", x)]])
-    rv$data[[rv$activeFile]] <- rv$data[[rv$activeFile]][, keep]
-    rv$sequence[[rv$activeFile]] <- rv$sequence[[rv$activeFile]][keep, ]
-    removeModal()
-  })
-  
   observeEvent(input$group_edit_confirm, {
-    groups <- rv$sequence[[rv$activeFile]][, 4]
-    sapply(seq(ncol(rv$data[[rv$activeFile]])), function(x) {
-      if(!is.na(groups[x])) {
-        isolate(rv$sequence[[rv$activeFile]][, 4][x] <- paste(rv$sequence[[rv$activeFile]][, 4][x], input[[paste0("edit_nickname", groups[x])]], sep = ": "))
+    sequence <- rv$sequence[[rv$activeFile]]
+    groups <- sequence[, 4]
+    for (x in seq_along(groups)) {
+      if (!is.na(groups[x])) {
+        input_x <- input[[paste0("edit_nickname", groups[x])]]
+        if (nchar(input_x) != 0 & isValidName(input_x)) {
+          sequence[x, 4] <- input_x
+        }
       }
-    })
+    }
+    rv$sequence[[rv$activeFile]] <- sequence
     removeModal()
-    show("sequence_panel")
   })
   
   observeEvent(input$example, {
-    # Lipidomics
-    data <- read.csv("./csvfiles/Eva pos export from profinder.csv", stringsAsFactors = FALSE)
-    sequence <- read.csv("./csvfiles/sequence_lipidomics_pos.csv", stringsAsFactors = FALSE)
+    # Load example files
+    # Negative ion mode
+    data <- read.csv("./example_files/Liverfetus_lipid_neg1.csv", stringsAsFactors = FALSE)
+    sequence <- read.csv("./example_files/fetus seq neg.csv", stringsAsFactors = FALSE)
     row.names(sequence) <- sequence[, 1]
     sequence <- sequence[, -1]
     rv$sequence[[length(rv$sequence) + 1]] <- sequence
     rv$data[[length(rv$data) + 1]] <- data
-    names(rv$data)[length(rv$data)] <- "Lipidomics_pos"
+    names(rv$data)[length(rv$data)] <- "Liverfetus_negative"
     initializeVariables()
     
-    # Metabolomics
-    data <- read.csv("./csvfiles/Woz export from mzmine pos.csv", stringsAsFactors = FALSE)
-    sequence <- read.csv("./csvfiles/sequence_metabolomics_pos.csv", stringsAsFactors = FALSE)
+    # Positive ion mode
+    data <- read.csv("./example_files/Liverfetus_lipid_pos1.csv", stringsAsFactors = FALSE)
+    sequence <- read.csv("./example_files/fetus seq pos.csv", stringsAsFactors = FALSE)
     row.names(sequence) <- sequence[, 1]
     sequence <- sequence[, -1]
     rv$sequence[[length(rv$sequence) + 1]] <- sequence
     rv$data[[length(rv$data) + 1]] <- data
-    names(rv$data)[length(rv$data)] <- "Metabolomics_pos"
+    names(rv$data)[length(rv$data)] <- "Liverfetus_positive"
     initializeVariables()
-    rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
+    rv$choices <- paste(seq_along(rv$data), ": ", names(rv$data))
+    
     updateTabItems(session, "tabs", selected = "Datainput")
     show("buttons")
     updateCollapse(session, "menu", close = "Data input")
@@ -200,48 +288,43 @@ shinyServer(function(session, input, output) {
   })
   
   # Update selected data
-  observeEvent(input$selectDataset, ignoreInit = TRUE, { 
+  observeEvent(input$selectDataset, ignoreInit = TRUE, {
     rv$activeFile <- which(rv$choices %in% input$selectDataset)
-    rows <- nrow(rv$data[[rv$activeFile]])
-    cols <- ncol(rv$data[[rv$activeFile]])
-    if(rows > 50)
-      rows <- 50
-    if(cols > 30)
-      cols <- 30
-    forVisuals <- rv$data[[rv$activeFile]][1:rows, 1:cols]
-    sequence <- rv$sequence[[rv$activeFile]]
-    data <- rv$data[[rv$activeFile]]
     
     output$seq_table <- renderDT(rv$sequence[[rv$activeFile]], extensions = 'Responsive', server = F, 
                                  editable = T, selection = 'none', options = list(pageLength = nrow(rv$sequence[[rv$activeFile]]), 
-                                                                                  fixedHeader = TRUE))
+                                                                                  scrollX = TRUE))
+    
     output$diboxtitle <- renderText(names(rv$data[rv$activeFile]))
-    output$dttable <- renderDT(data, rownames = FALSE, options = list(scrollX = TRUE, 
-                                                                      scrollY = "700px"))
+    
+    output$dttable <- renderDT(rv$data[[rv$activeFile]], rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px"))
+    
     output$dt_drift_panel <- renderDT(rv$data[[rv$activeFile]][rv$sequence[[rv$activeFile]][, 1] %in% "Name"], rownames = FALSE, 
                                       options = list(autoWidth = TRUE, scrollY = "700px", pageLength = 20))
+    
     output$dt_boxplot_panel <- renderDT(rv$data[[rv$activeFile]][rv$sequence[[rv$activeFile]][, 1] %in% "Name"], rownames = FALSE, 
                                         options = list(autoWidth = TRUE, scrollY = "700px", pageLength = 20))
     
+    data <- rv$data[[rv$activeFile]]
+    sequence <- rv$sequence[[rv$activeFile]]
     output$histogram <- renderPlotly({
       samples <- data[, sequence[ , 'labels'] %in% "Sample"]
-      samples[is.na(samples)] <- 0
-      medians <- apply(samples, 2, median)
+      medians <- apply(samples, 2, median, na.rm = TRUE)
       median_data <- data.frame(
         Sample = names(medians),
         Median = medians
       )
       ggplot(median_data, aes(x = Sample, y = Median)) +
-        geom_col(fill = "skyblue", color = "black") +
-        labs(x = "Sample", y = "Median") +
-        theme_minimal()
+        geom_col(fill = "skyblue", color = "black", width = 0.7) +
+        labs(x = "Samples", y = "Median") +
+        theme_minimal() +
+        theme(axis.text.x = element_blank())
     })
     
     output$histogram_qc <- renderUI({
       QCs <- data[, sequence[ , 'labels'] %in% "QC"]
       if(ncol(QCs) > 0) {
-        QCs[is.na(QCs)] <- 0
-        medians <- apply(QCs, 2, median)
+        medians <- apply(QCs, 2, median, na.rm = TRUE)
         median_QC <- data.frame(
           QC = names(medians),
           Median = medians
@@ -259,23 +342,21 @@ shinyServer(function(session, input, output) {
       } 
     })
     
-    if (sum(rv$sequence[[rv$activeFile]][, 1] %in% "Name") == 1) {
+    if (sum(rv$sequence[[rv$activeFile]][, 1] %in% "Name") == 1) { #TODO check if this check is needed
       internalStandards <- findInternalStandards(rv$data[[rv$activeFile]][rv$sequence[[rv$activeFile]][, 1] %in% "Name"])
       updateCheckboxGroupInput(session, "isChoose", choices = internalStandards, selected = internalStandards)
-      enable("normalizeIS"); enable("optimizeIS"); enable("removeIS"); enable("saveIS")
+      enable("normalizeIS"); enable("removeIS"); enable("saveIS")
       if(length(internalStandards) == 0) {
-        disable("normalizeIS"); disable("optimizeIS"); disable("removeIS"); disable("saveIS")
+        disable("normalizeIS"); disable("removeIS"); disable("saveIS")
       } 
     }
-    
-    # Statistics
-    updateSelectInput(session, "group1", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'class']))
-    updateSelectInput(session, "group2", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'class']))
-    updateSelectInput(session, "time1", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'time']))
-    updateSelectInput(session, "time2", label = NULL, choices = na.omit(rv$sequence[[rv$activeFile]][, 'time']))
   })
   
+  # Observer for list of all the datasets 
   observeEvent(rv$choices, {
+    choices <- rv$choices
+    num_datasets <- length(choices)
+    
     output$downloadSequence <- downloadHandler(
       filename <- function() {
         paste0(names(rv$data[rv$activeFile]), "_seq.csv")
@@ -286,26 +367,15 @@ shinyServer(function(session, input, output) {
     )
     
     # Export panel
-    output$export_ui <- renderUI({
-      lapply(1:length(rv$choices), function(x) {
-        fluidRow(column(12, downloadLink(paste0("dwn", x), paste0(rv$choices[x], ".csv"))))
-      })   
-    })
-    output$export_metabo <- renderUI({
-      lapply(1:length(rv$choices), function(x) {
-        fluidRow(column(12, downloadLink(paste0("dwn_metabo", x), paste0(rv$choices[x], "_metabo.csv"))))
-      })
-    })
-    output$export_stats <- renderUI({
-      lapply(1:length(rv$choices), function(x) {
-        fluidRow(column(12, downloadLink(paste0("dwn_stats", x), paste0(rv$choices[x], "_results.xlsx"))))
-      })
-    })
-    output$export_settings <- renderUI({
-      lapply(1:length(rv$choices), function(x) {
-        fluidRow(column(12, downloadLink(paste0("dwn_settings", x), paste0(rv$choices[x], ".txt"))))
-      })
-    })
+    output$export_ui <- renderDownloadUI("dwn_general", ".csv")
+    output$export_metabo <- renderDownloadUI("dwn_metabo", "_metabo.csv")
+    output$export_stats <- renderDownloadUI("dwn_stats", "_results.xlsx")
+    output$export_settings <- renderDownloadUI("dwn_settings", ".txt")
+    
+    #    lapply(seq_len(num_datasets), createDownloadHandler("general", ".csv", rv$data[[rv$activeFile]]))
+    #    lapply(seq_len(num_datasets), createDownloadHandler("stats", ".xlsx", rv$results[[rv$activeFile]]))
+    #    lapply(seq_len(num_datasets), createDownloadHandler("settings", ".txt", rv$info[[rv$activeFile]]))
+    #    lapply(seq_len(num_datasets), createDownloadHandler("metabo", ".csv", getMetaboData))
     
     lapply(1:length(rv$choices), function(x) {
       output[[paste0("dwn_stats", x)]] <- downloadHandler(
@@ -313,13 +383,12 @@ shinyServer(function(session, input, output) {
           paste0(names(rv$data[x]), "_results.xlsx")
         },
         content = function(file) {
-          write_xlsx(st$results[[x]], file)
+          write_xlsx(rv$results[[x]], file)
         }
       )
     })
-    
     lapply(1:length(rv$choices), function(x) {
-      output[[paste0("dwn", x)]] <- downloadHandler(
+      output[[paste0("dwn_general", x)]] <- downloadHandler(
         filename = function() {
           paste0(names(rv$data[x]), ".csv")
         },
@@ -328,7 +397,6 @@ shinyServer(function(session, input, output) {
         }
       )
     })
-    
     lapply(1:length(rv$choices), function(x) {
       output[[paste0("dwn_settings", x)]] <- downloadHandler(
         filename = function() {
@@ -339,14 +407,13 @@ shinyServer(function(session, input, output) {
         }
       )
     })
-    
     lapply(1:length(rv$choices), function(x) {
       dat <- rv$data[[x]]
       seq <- rv$sequence[[x]]
       seq[seq[, 1] %in% "QC", 4] <- "QC"
-      class <- c("", seq[seq[, 1] %in% c("Sample", "QC"), 4])
+      group <- c("", seq[seq[, 1] %in% c("Sample", "QC"), 4])
       outdat <- data.frame(dat[seq[, 1] %in% "Name"], dat[seq[, 1] %in% c("Sample", "QC")])
-      outdat <- rbind(class, outdat)
+      outdat <- rbind(group, outdat)
       output[[paste0("dwn_metabo", x)]] <- downloadHandler(
         filename = function() {
           paste0(names(rv$data[x]), "_metabo.csv")
@@ -357,13 +424,15 @@ shinyServer(function(session, input, output) {
       )
     })
     
-    updateCheckboxGroupInput(session, "export_xml_list", choices = rv$choices, selected = NULL)
-    updateSelectInput(session, "mergeFile", choices = rv$choices, selected = rv$choices[length(rv$choices)])
-    updateSelectInput(session, "drift_select", choices = c("None", rv$choices))
-    updateSelectInput(session, "selectDataset", choices = rv$choices, selected = rv$choices[length(rv$choices)])
-    updateSelectInput(session, "selectpca1", choices = rv$choices, selected = rv$choices[length(rv$choices)])
-    updateSelectInput(session, "selectpca2", choices = rv$choices, selected = rv$choices[length(rv$choices)])
+    updateCheckboxGroupInput(session, "export_xml_list", choices = choices, selected = NULL)
     updateCheckboxGroupInput(session, "filesToRemove", choices = names(rv$data), selected = NULL)
+    updateSelectInput(session, "drift_select", choices = c("None", choices))
+    
+    inputs <- c("selectDataset", "mergeFile", "selectpca1", "selectpca2")
+    selected <- ifelse(is.null(rv$activeFile), length(choices), rv$activeFile)
+    for(input in inputs) {
+      updateSelectInput(session, input, choices = choices, selected = choices[selected])
+    }
   })
   
   observeEvent(input$removeFiles, {
@@ -376,13 +445,9 @@ shinyServer(function(session, input, output) {
       rv$data <- rv$data[keep]
       rv$sequence <- rv$sequence[keep]
       rv$info <- rv$info[keep]
-      st$stats <- st$stats[keep]
-      st$sequence <- st$sequence[keep]
-      st$results <- st$results[keep]
-      st$comparisons <- st$comparisons[keep]
-      st$colcomp <- st$colcomp[keep]
-      rv$activeFile <- names(rv$data)[length(rv$data)]
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
+      rv$results <- rv$results[keep]
+      rv$activeFile <- length(rv$data)
+      rv$choices <- paste(seq_along(rv$data), ": ", names(rv$data))
       showNotification("Files removed.", type = "message")
     }
   })
@@ -422,7 +487,9 @@ shinyServer(function(session, input, output) {
     }
   })
   
-  # Blank filtration
+  
+  ## Blank filtration ##
+  
   observeEvent(input$blankFiltrate, {
     if(is.null(rv$activeFile)) {
       showNotification("No data", type = "error")
@@ -435,46 +502,31 @@ shinyServer(function(session, input, output) {
     } else {
       sequence <- rv$sequence[[rv$activeFile]]
       data <- rv$data[[rv$activeFile]]
+      
       filtered <- blankFiltration(data, sequence, input$signalStrength, input$keepIS)
+      
       if(input$discardBlank) {
         filtered <- filtered[!sequence[, 1] %in% "Blank"]
         sequence <- sequence[!sequence[, 1] %in% "Blank", ]
       }
+      
       rv$tmpData <- filtered
       rv$tmpSequence <- sequence
+      
       updateSelectInput(session, "selectpca1", selected = "Unsaved data", choices = c("Unsaved data", rv$choices))
       output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
-      sendSweetAlert(
-        session = session,
-        title = "Success",
-        text = paste0(nrow(rv$data[[rv$activeFile]]) - nrow(rv$tmpData), " features removed"),
-        type = "success"
-      )
+      sendSweetAlert(session, "Success", paste0(nrow(rv$data[[rv$activeFile]]) - nrow(rv$tmpData), " features removed"), type = "success")
     }
   })
   
   observeEvent(input$saveBF, {
-    if (is.null(rv$tmpData)) {
-      showNotification("Blank filtrate first", type = "error")
-    } else {
-      if (input$newFileBF) {
-        rv$data[[length(rv$data) + 1]] <- rv$tmpData
-        rv$sequence[[length(rv$sequence) + 1]] <- rv$tmpSequence
-        names(rv$data)[length(rv$data)] <- paste0(names(rv$data)[rv$activeFile], "_", input$signalStrength, "xb")
-        initializeVariables()
-      } else {
-        rv$data[[rv$activeFile]] <- rv$tmpData
-        rv$sequence[[rv$activeFile]] <- rv$tmpSequence
-        names(rv$data)[rv$activeFile] <- paste0(names(rv$data)[rv$activeFile], "_", input$signalStrength, "xb")
-      }
-      rv$info[length(rv$data)] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), "Blank filtrated with singal strength above blank =", input$signalStrength, "\n")
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
-      rv$tmpData <- NULL
-      rv$tmpSequence <- NULL   
-    }
+    additionalInfo <- paste("Blank filtrated with signal strength above blank =", input$signalStrength)
+    updateDataAndSequence("Blank filtrate first", input$newFileBF, paste("_", input$signalStrength, "xb"), additionalInfo)
   })
   
-  # IS normalization
+  
+  ## IS normalization ##
+  
   observeEvent(input$normalizeIS, {
     if (is.null(rv$activeFile)) {
       showNotification("No data", type = "error")
@@ -487,44 +539,29 @@ shinyServer(function(session, input, output) {
       data <- rv$data[[rv$activeFile]]
       
       normalized <- normalizationIS(data, sequence, input$isChoose, input$isMethod, input$normalizeQC)
-      rv$tmpData <- normalized
-      rv$tmpSequence <- sequence
-      sendSweetAlert(session, title = "Success", text = paste0("Internal standards normalized with ", input$isMethod, " method"), type = "success")
-      updateSelectInput(session, "selectpca1", selected = "Unsaved data", choices = c("Unsaved data", rv$choices))
-      output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
-    }
-  })
-  
-  observeEvent(input$optimizeIS, {
-    if (is.null(rv$activeFile)) {
-      showNotification("No data", type = "error")
-    } else {
-      sequence <- rv$sequence[[rv$activeFile]]
-      data <- rv$data[[rv$activeFile]]
-      optimized <- optimizeIS(data, sequence, input$isChoose, input$isMethod, input$normalizeQC)
-      updateCheckboxGroupInput(session, "isChoose", selected = optimized)
+      
+      if(is.null(normalized)) {
+        sendSweetAlert(session, "Error", "Internal standard normalization failed due to missing values in IS.", type = "error")
+      }
+      else {
+        # Add isnorm column to sequence
+        isColumn <- c("-", rep(NA, ncol(sequence) - 1))
+        sequence <- rbind(sequence, isColumn)
+        rownames(sequence)[nrow(sequence)] <- "isnorm"
+        
+        rv$tmpData <- normalized
+        rv$tmpSequence <- sequence
+        
+        sendSweetAlert(session, title = "Success", text = paste0("Internal standards normalized with ", input$isMethod, " method"), type = "success")
+        updateSelectInput(session, "selectpca1", selected = "Unsaved data", choices = c("Unsaved data", rv$choices))
+        output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
+      }
     }
   })
   
   observeEvent(input$saveIS, {
-    if(is.null(rv$tmpData)) {
-      showNotification("IS normalize first", type = "error")
-    } else {
-      if(input$newFileIS) {
-        rv$data[[length(rv$data) + 1]] <- rv$tmpData
-        rv$sequence[[length(rv$sequence) + 1]] <- rv$tmpSequence
-        names(rv$data)[length(rv$data)] <- paste0(names(rv$data)[rv$activeFile], "_is")
-        initializeVariables()
-      } else {
-        rv$data[[rv$activeFile]] <- rv$tmpData
-        rv$sequence[[rv$activeFile]] <- rv$tmpSequence
-        names(rv$data)[rv$activeFile] <- paste0(names(rv$data)[rv$activeFile], "_is")
-      }
-      rv$info[length(rv$data)] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), "Internal standards normalized with", input$isMethod, "method\n")
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
-      rv$tmpData <- NULL
-      rv$tmpSequence <- NULL
-    }
+    additionalInfo <- paste("Internal standards normalized with", input$isMethod, "method")
+    updateDataAndSequence("IS normalize first", input$newFileIS, "_is", additionalInfo)
   })
   
   observeEvent(input$removeIS, {
@@ -540,7 +577,9 @@ shinyServer(function(session, input, output) {
     }
   })
   
-  # Missing value filtration
+  
+  ## Missing value filtration ##
+  
   observeEvent(input$runFilterNA, {
     if(is.null(rv$activeFile)) {
       showNotification("No data", type = "error")
@@ -569,28 +608,18 @@ shinyServer(function(session, input, output) {
   })
   
   observeEvent(input$saveFilterNA, {
-    if (is.null(rv$tmpData)) {
-      showNotification("Filtrate first", type = "error")
-    } else {
-      if (input$mvf_newsave) {
-        rv$data[[length(rv$data) + 1]] <- rv$tmpData
-        rv$sequence[[length(rv$sequence) + 1]] <- rv$tmpSequence
-        names(rv$data)[length(rv$data)] <- paste0(names(rv$data)[rv$activeFile], "_mvr")
-        initializeVariables()
-      } else {
-        rv$data[[rv$activeFile]] <- rv$tmpData
-        rv$sequence[[rv$activeFile]] <- rv$tmpSequence
-        names(rv$data)[rv$activeFile] <- paste0(names(rv$data)[rv$activeFile], "_mvr")
-      }
-      rv$info[length(rv$data)] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), "Missing value filtration using", 
-                                        input$cutoffNAs, "% as threshold and method -", paste(input$filterNAmethod, collapse=", "), "\n")
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
-      rv$tmpData <- NULL
-      rv$tmpSequence <- NULL   
-    }
+    additionalInfo <- paste(
+      "Missing value filtration using",
+      input$cutoffNAs,
+      "% as threshold and method -",
+      paste(input$filterNAmethod, collapse=", ")
+    )
+    updateDataAndSequence("Filtrate first", input$mvf_newsave, "_mvr", additionalInfo)
   })
   
-  # Imputation
+  
+  ## Imputation ##
+  
   observeEvent(input$runImputation, {
     if (is.null(rv$activeFile)) {
       showNotification("No data", type = "error")
@@ -599,14 +628,11 @@ shinyServer(function(session, input, output) {
     } else {
       data <- rv$data[[rv$activeFile]]
       sequence <- rv$sequence[[rv$activeFile]]
-      imputed <- imputation(data, sequence,
-                            method = input$imputationMethod,
-                            minx = input$imputationMinX,
-                            onlyqc = input$imp_onlyQC,
-                            remaining = input$remainingNAs
-      )
+      imputed <- imputation(data, sequence, input$imputationMethod, input$imputationMinX, input$imp_onlyQC, input$remainingNAs)
+      
       rv$tmpData <- imputed
       rv$tmpSequence <- sequence
+      
       updateSelectInput(session, "selectpca1", selected = "Unsaved data", choices = c("Unsaved data", rv$choices))
       output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
       sendSweetAlert(
@@ -633,42 +659,32 @@ shinyServer(function(session, input, output) {
   })
   
   observeEvent(input$saveImputation, {
-    if (is.null(rv$tmpData)) {
-      showNotification("Imputate first", type = "error")
-    } else {
-      if(input$newFileImp) {
-        rv$data[[length(rv$data) + 1]] <- rv$tmpData
-        rv$sequence[[length(rv$sequence) + 1]] <- rv$tmpSequence
-        names(rv$data)[length(rv$data)] <- paste0(names(rv$data)[rv$activeFile], "_imp")
-        initializeVariables()
-      } else {
-        rv$data[[rv$activeFile]] <- rv$tmpData
-        rv$sequence[[rv$activeFile]] <- rv$tmpSequence
-        names(rv$data)[rv$activeFile] <- paste0(names(rv$data)[rv$activeFile], "_imp")
-      }
-      rv$info[length(rv$data)] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), "Missing values imputation with", input$imputationMethod, "\n")
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
-      rv$tmpData <- NULL
-      rv$tmpSequence <- NULL   
-    }
+    additionalInfo <- paste("Missing values imputation with", input$imputationMethod)
+    updateDataAndSequence("Impute first", input$newFileImp, "_imp", additionalInfo)
   })
   
-  # Drift correction
-  observeEvent(input$driftMethod, {
-    if (input$driftMethod == "QC-RFSC (random forrest)") {
-      hide("dc_qcspan_hide")
-      hide("dc_degree_hide")
-      show("dc_ntree_hide")
-    } else {
-      hide("dc_ntree_hide")
-      show("dc_qcspan_hide")
-      show("dc_degree_hide")
-    }
-  })
+  
+  ## Drift correction ##
+  
+  # observeEvent(input$driftMethod, {
+  #   if (input$driftMethod == "QC-RFSC (random forrest)") {
+  #     hide("dc_qcspan_hide")
+  #     hide("dc_degree_hide")
+  #     show("dc_ntree_hide")
+  #   } else {
+  #     hide("dc_ntree_hide")
+  #     show("dc_qcspan_hide")
+  #     show("dc_degree_hide")
+  #   }
+  # })
   
   observeEvent(input$runDrift, {
     if (is.null(rv$activeFile)) {
       showNotification("No data", type = "error")
+    } else if (is.null(rv$sequence[[rv$activeFile]])) { #TODO remove? sequence is never NULL
+      showNotification("No sequence file", type = "error")
+    } else if (all(is.na(rv$sequence[[rv$activeFile]][, 'order']))) {
+      showNotification("No order information, upload sequence", type = "error")
     } else {
       data <- rv$data[[rv$activeFile]]
       sequence <- rv$sequence[[rv$activeFile]]  
@@ -678,13 +694,11 @@ shinyServer(function(session, input, output) {
         sendSweetAlert(session = session, title = "Error", text = "QCs cannot have missing values.", type = "error")
       }
       else {
-        corrected <- driftcorrection(data, sequence,
-                                     method = input$driftMethod,
-                                     ntree = input$driftTrees,
-                                     QCspan = input$driftQCspan
-        )
+        corrected <- driftCorrection(data, sequence, input$driftMethod, input$driftTrees, input$driftDegree, input$driftQCspan)
+        
         rv$tmpData <- corrected
         rv$tmpSequence <- sequence
+        
         updateSelectInput(session, "selectpca1", selected = "Unsaved data", choices = c("Unsaved data", rv$choices))
         output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
       }
@@ -692,29 +706,17 @@ shinyServer(function(session, input, output) {
   })
   
   observeEvent(input$saveDrift, {
-    if (is.null(rv$tmpData)) {
-      showNotification("Drift correct first", type = "error")
-    } else {
-      if (input$newFileDrift) {
-        rv$data[[length(rv$data) + 1]] <- rv$tmpData
-        rv$sequence[[length(rv$sequence) + 1]] <- rv$tmpSequence
-        names(rv$data)[length(rv$data)] <- paste0(names(rv$data)[rv$activeFile], "_dc")
-        initializeVariables()
-        
-      } else {
-        rv$data[[rv$activeFile]] <- rv$tmpData
-        rv$sequence[[rv$activeFile]] <- rv$tmpSequence
-        names(rv$data)[rv$activeFile] <- paste0(names(rv$data)[rv$activeFile], "_dc")
-      }
-      rv$info[length(rv$data)] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), "Drift correction", input$driftMethod, "and", input$driftTrees, "\n")
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
-      rv$tmpData <- NULL
-      rv$tmpSequence <- NULL   
-    }
+    additionalInfo <- paste(
+      "Drift correction applied using method: ", input$driftMethod,
+      "with ", input$driftTrees, " trees."
+    )
+    updateDataAndSequence("Drift correct first", input$newFileDrift, "_dc", additionalInfo)
   })
   
-  # Merge datasets
-  observeEvent(input$mergeRankings, {
+  
+  ## Merge datasets ##
+  
+  observeEvent(input$editRankings, {
     showModal(
       modalDialog(
         title = "Change the priority of annotations", size = "s", easyClose = TRUE,
@@ -723,11 +725,11 @@ shinyServer(function(session, input, output) {
           fluidRow(
             column(
               width = 8,
-              textInput(paste0("md_rankings_text", x), NULL, value = rankings[x, 1], placeholder = "Empty")
+              textInput(paste0("md_rankings_text", x), NULL, value = rankings_merge[x, 1], placeholder = "Empty")
             ),
             column(
               width = 4,
-              numericInput(paste0("md_rankings_prio", x), NULL, value = rankings[x, 2], min = 0, max = 10)
+              numericInput(paste0("md_rankings_prio", x), NULL, value = rankings_merge[x, 2], min = 0, max = 10)
             ),
           )
         })
@@ -737,8 +739,8 @@ shinyServer(function(session, input, output) {
   
   observeEvent(input$md_edit_rankings, {
     sapply(1:10, function(x) {
-      rankings[x, 1] <<- toupper(input[[paste0("md_rankings_text", x)]])
-      rankings[x, 2] <<- input[[paste0("md_rankings_prio", x)]]
+      rankings_merge[x, 1] <<- toupper(input[[paste0("md_rankings_text", x)]])
+      rankings_merge[x, 2] <<- input[[paste0("md_rankings_prio", x)]]
     })
     removeModal()
   })
@@ -797,12 +799,12 @@ shinyServer(function(session, input, output) {
         nclust <- sapply(dub_dat$mergeID, function(x) {
           table(dub_dat$mergeID)[names(table(dub_dat$mergeID)) == x]
         })
-        
+        colnames(dub_dat)[activeSequence[, 1] %in% c("Adduct_pos", "Adduct_neg")] <- "adduct"
         out_dub <- data.frame(
           "nClust" = nclust,
           "Cluster_ID" = dub_dat$mergeID,
           "Ion_mode" = dub_dat$ionmode,
-          "Adductor" = dub_dat$add,
+          "Adductor" = dub_dat$adduct,
           "Name" = dub_dat[, which(activeSequence[, 1] %in% "Name")],
           "RT" = dub_dat[, which(activeSequence[, 1] %in% "RT")],
           "Mass" = dub_dat[, which(activeSequence[, 1] %in% "Mass")],
@@ -815,7 +817,7 @@ shinyServer(function(session, input, output) {
           datatable(out_dub,
                     rownames = F,
                     options = list(dom = "t", autowidth = T, paging = F),
-                    selection = list(selected = finddup(out_dub, rankings))
+                    selection = list(selected = finddup(out_dub, rankings_merge))
           ) %>% formatStyle(1:8, `border-top` = styleRow(cluster_ends, "solid 2px"))
         },
         server = T
@@ -855,6 +857,8 @@ shinyServer(function(session, input, output) {
     rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
   })
   
+  
+  ## Principal Component Analysis ##
   #TODO
   observeEvent(input$run_pca1, {
     if (!is.null(rv$activeFile)) {
@@ -862,7 +866,7 @@ shinyServer(function(session, input, output) {
         data <- rv$tmpData
         seq <- rv$tmpSequence
       } else {
-        selectchoices <- paste(1:length(rv$data), ": ", names(rv$data))
+        selectchoices <- paste(seq_along(rv$data), ": ", names(rv$data))
         sd <- which(rv$choices %in% input$selectpca1)
         data <- rv$data[[sd]]
         seq <- rv$sequence[[sd]]
@@ -872,8 +876,8 @@ shinyServer(function(session, input, output) {
           seq[seq[, 1] %in% "QC", ][, 4] <- "QC"
         
         sdata <- data[seq[, 1] %in% c("Sample", "QC")]
-        sclass <- seq[seq[, 1] %in% c("Sample", "QC"), ][, 4]
-        pca <- pcaplot(sdata, sclass, input$pca1_islog)
+        sgroup <- seq[seq[, 1] %in% c("Sample", "QC"), ][, 4]
+        pca <- pcaplot(sdata, sgroup, input$pca1_islog)
         output$plotpca1 <- renderPlotly(pca)
         
         if (sum(seq[, 1] %in% "QC") > 0) {
@@ -881,18 +885,18 @@ shinyServer(function(session, input, output) {
         } else {
           qccv <- "No QC in dataset </br>"
         }
-        sclass <- sclass[sclass != "QC"]
-        if (sum(!is.na(sclass)) > 0) {
-          classcv <- sapply(sort(unique(sclass)), function(x) {
-            round(cvmean(sdata[, sclass %in% x]), 2)
+        sgroup <- sgroup[sgroup != "QC"]
+        if (sum(!is.na(sgroup)) > 0) {
+          groupcv <- sapply(sort(unique(sgroup)), function(x) {
+            round(cvmean(sdata[, sgroup %in% x]), 2)
           })
-          classcv <- sapply(seq_along(classcv), function(x) {
-            paste0("CV in class ", x, ": ", classcv[x], "</br>")
+          groupcv <- sapply(seq_along(groupcv), function(x) {
+            paste0("CV in group ", sort(unique(sgroup))[x], ": ", groupcv[x], "</br>")
           })
         } else {
-          classcv <- NULL
+          groupcv <- NULL
         }
-        text <- c(qccv, classcv)
+        text <- c(qccv, groupcv)
         output$pca1Details <- renderUI({
           HTML(text)
         })
@@ -901,7 +905,7 @@ shinyServer(function(session, input, output) {
   })
   
   observeEvent(input$run_pca2, {
-    selectchoices <- paste(1:length(rv$data), ": ", names(rv$data))
+    selectchoices <- paste(seq_along(rv$data), ": ", names(rv$data))
     sd <- which(rv$choices %in% input$selectpca2)
     if ("Sample" %in% rv$sequence[[sd]][, 1]) {
       data <- rv$data[[sd]]
@@ -913,8 +917,8 @@ shinyServer(function(session, input, output) {
       )
       
       sdata <- data[seq[, 1] %in% c("Sample", "QC")]
-      sclass <- seq[seq[, 1] %in% c("Sample", "QC"), ][, 4]
-      pca <- pcaplot(sdata, sclass, input$pca2_islog)
+      sgroup <- seq[seq[, 1] %in% c("Sample", "QC"), ][, 4]
+      pca <- pcaplot(sdata, sgroup, input$pca2_islog)
       output$plotpca2 <- renderPlotly(pca)
       
       if (sum(seq$labels %in% "QC") > 0) {
@@ -922,23 +926,450 @@ shinyServer(function(session, input, output) {
       } else {
         qccv <- "No QC in dataset </br>"
       }
-      sclass <- sclass[sclass != "QC"]
-      if (sum(!is.na(sclass)) > 0) {
-        classcv <- sapply(sort(unique(sclass)), function(x) {
-          round(cvmean(sdata[sclass %in% x]), 2)
+      sgroup <- sgroup[sgroup != "QC"]
+      if (sum(!is.na(sgroup)) > 0) {
+        groupcv <- sapply(sort(unique(sgroup)), function(x) {
+          round(cvmean(sdata[sgroup %in% x]), 2)
         })
-        classcv <- sapply(seq_along(classcv), function(x) {
-          paste0("CV in class ", x, ": ", classcv[x], "</br>")
+        groupcv <- sapply(seq_along(groupcv), function(x) {
+          paste0("CV in group ", sort(unique(sgroup))[x], ": ", groupcv[x], "</br>")
         })
       } else {
-        classcv <- NULL
+        groupcv <- NULL
       }
-      text <- c(qccv, classcv)
+      text <- c(qccv, groupcv)
       output$pca2Details <- renderUI({
         HTML(text)
       })
     }
   })
+  
+  observeEvent(input$select_boxplot_1, { #TODO which rv choices -> function
+    data <- rv$data[[which(rv$choices %in% input$select_boxplot_1)]]
+    sequence <- rv$sequence[[which(rv$choices %in% input$select_boxplot_1)]]
+    group <- input$select_boxplot_1_group
+    data <- data[sequence[, 1] %in% "Sample" & sequence[, 4] %in% group]
+    output$boxplot_1 <- renderPlot({
+      boxplot(log2(data), main = input$select_boxplot_1, xlab = "Analyte", ylab = "Intensity")
+    })
+  }, ignoreInit = TRUE)
+  
+  observeEvent(input$drift_1, {
+    rv$drift_plot_select <- 1
+  })
+  
+  observeEvent(input$drift_2, {
+    rv$drift_plot_select <- 2
+  })
+  
+  observeEvent(input$drift_3, {
+    rv$drift_plot_select <- 3
+  })
+  
+  output$drift_ui <- renderUI({
+    box(
+      width = NULL,
+      if (is.null(rv$activeFile)) {
+        p("No data")
+      } else if (input$drift_select != "None" && nrow(rv$data[[rv$activeFile]]) != nrow(rv$data[[which(rv$choices %in% input$drift_select)]])) {
+        p("Not able to compare the selected datasets")
+      } else if (input$drift_select == "None" && rv$drift_plot_select == 2) {
+        p("Need dataset to compare with")
+      } else if (is.null(input$dt_drift_panel_rows_selected) && rv$drift_plot_select == 1) {
+        p("Select feature to plot")
+      } else if (rv$drift_plot_select == 1) {
+        lapply(seq_along(input$dt_drift_panel_rows_selected), function(i) {
+          fluidRow(
+            column(6, plotOutput(paste0("driftplotoutput", i), height = 280, width = "100%")),
+            column(6, plotOutput(paste0("driftplotoutput2", i), height = 280, width = "100%"))
+          )
+        })
+      } else if (rv$drift_plot_select == 2) {
+        fluidRow(column(12, plotOutput("cvscatterplot", height = 600, width = "100%")))
+      } else {
+        p("Nothing here yet")
+      }
+    )
+  })
+  
+  output$boxplot_ui <- renderUI({
+    box(
+      width = NULL,
+      if (is.null(rv$activeFile)) {
+        p("No data")
+      } else if (is.null(input$dt_boxplot_panel_rows_selected)) {
+        p("Select feature to plot")
+      } else {
+        lapply(seq_along(input$dt_boxplot_panel_rows_selected), function(i) {
+          fluidRow(column(12, plotOutput(paste0("boxplotoutput", i), height = 280, width = "100%")))
+        })
+      }
+    )
+  })
+  
+  observe({
+    if (length(input$dt_drift_panel_rows_selected) == 0 && rv$drift_plot_select == 1) {
+      output$driftplotoutput1 <- renderPlot({
+        NULL
+      })
+      output$driftplotoutput21 <- renderPlot({
+        NULL
+      })
+    } else if (rv$drift_plot_select == 1) {
+      for (i in 1:(length(input$dt_drift_panel_rows_selected) + 1)) {
+        output[[paste0("driftplotoutput", i)]] <- renderPlot({
+          NULL
+        })
+        output[[paste0("driftplotoutput2", i)]] <- renderPlot({
+          NULL
+        })
+      }
+      for (i in seq_along(input$dt_drift_panel_rows_selected)) {
+        local({
+          my_i <- i
+          output[[paste0("driftplotoutput", my_i)]] <- renderPlot({
+            driftplot(
+              data = rv$data[[rv$activeFile]][input$dt_drift_panel_rows_selected[my_i], ],
+              seq = rv$sequence[[rv$activeFile]]
+            )
+          })
+        })
+        if (input$drift_select != "None") {
+          local({
+            my_i <- i
+            output[[paste0("driftplotoutput2", my_i)]] <- renderPlot({
+              driftplot(
+                data = rv$data[[which(rv$choices %in% input$drift_select)]][input$dt_drift_panel_rows_selected[my_i], ],
+                seq = rv$sequence[[rv$activeFile]]
+              )
+            })
+          })
+        }
+      }
+    } else if (rv$drift_plot_select == 2) {
+      output$cvscatterplot <- renderPlot({
+        cvscatterplot(
+          data = rv$data[[rv$activeFile]],
+          data2 = rv$data[[which(rv$choices %in% input$drift_select)]],
+          seq = rv$sequence[[rv$activeFile]],
+          name1 = names(rv$data)[rv$activeFile],
+          name2 = names(rv$data)[which(rv$choices %in% input$drift_select)]
+        )
+      })
+    }
+  })
+  
+  observe({
+    if (length(input$dt_boxplot_panel_rows_selected > 0)) {
+      for (i in seq_along(input$dt_boxplot_panel_rows_selected)) {
+        local({
+          my_i <- i
+          output[[paste0("boxplotoutput", my_i)]] <- renderPlot({
+            myboxplot(
+              data = rv$data[[rv$activeFile]][input$dt_boxplot_panel_rows_selected[my_i], ],
+              seq = rv$sequence[[rv$activeFile]],
+              log = input$bloxplot_log,
+              ylog = input$bloxplot_ylog
+            )
+          })
+        })
+      }
+    }
+  })
+  
+  observe({ 
+    if (!is.null(rv$activeFile)) {
+      seq <- rv$sequence[[rv$activeFile]]
+      dat <- rv$data[[rv$activeFile]]
+      blank_mv <- sum(is.na(dat[seq[, 1] %in% "Blank"])) +
+        sum(dat[seq[, 1] %in% "Blank"] == 0, na.rm = TRUE)
+      qc_mv <- sum(is.na(dat[seq[, 1] %in% "QC"])) +
+        sum(dat[seq[, 1] %in% "QC"] == 0, na.rm = TRUE)
+      sample_mv <- sum(is.na(dat[seq[, 1] %in% "Sample"])) +
+        sum(dat[seq[, 1] %in% "Sample"] == 0, na.rm = TRUE)
+      
+      sdata <- dat[seq[, 1] %in% "Sample"]
+      sgroup <- seq[seq[, 1] %in% "Sample", ][, 4]
+      
+      if (sum(seq$labels %in% "QC") > 0) {
+        qccv <- paste0("CV in QC samples: ",
+                       round(cvmean(dat[seq[, 1] %in% "QC"]), 2), "</br>")
+      } else {
+        qccv <- "No QC in dataset </br>"
+      }
+      
+      if (sum(!is.na(sgroup)) > 0) {
+        groupcv <- sapply(sort(unique(sgroup)), function(x) {
+          round(cvmean(sdata[sgroup %in% x]), 2)
+        })
+        groupcv <- sapply(seq_along(groupcv), function(x) {
+          paste0("CV in group ", sort(unique(sgroup))[x], ": ", groupcv[x], "</br>")
+        })
+      } else {
+        groupcv <- NULL
+      }
+      text <- c(qccv, groupcv)
+      output$title <- renderText({
+        HTML("<h3>", names(rv$data)[rv$activeFile], "</h3>")
+      })
+      output$info_ui <- renderUI({
+        HTML(nrow(dat) - 1, " features.<br>", ncol(dat[seq[, 1] %in% "Sample"]), " samples.<br>", ncol(dat[seq[, 1] %in% "QC"]), " QC samples.<br>", ncol(dat[seq[, 1] %in% "Blank"]), " Blank samples.<br>", "<br>", sample_mv, " missing values in Samples<br>", qc_mv, " missing values in QC samples<br>", blank_mv, " missing values in Blank samples<br><br>")
+      })
+      output$cvinfo_ui <- renderUI({
+        HTML(text)
+      })
+      
+      
+      # Update statistics select input options
+      groups <- na.omit(seq[, 'group'])
+      time <- na.omit(seq[, 'time'])
+      
+      group_inputs <- c("group1", "group2", "group1_time", "group2_time", "group1_polystest", "group2_polystest")
+      for (x in group_inputs) {
+        updateSelectInput(session, x, label = NULL, choices = groups)
+      }
+      
+      time_inputs <- c("time1_time", "time2_time", "time1_polystest", "time2_polystest")
+      for (x in time_inputs) {
+        updateSelectInput(session, x, label = NULL, choices = time, selected = "")
+      }
+    }
+  })
+  
+  
+  ## Normalization ##
+  
+  observeEvent(input$normalize, {
+    if (is.null(rv$activeFile)) {
+      showNotification("No data", type = "error")
+    } else if(input$normMethod == "QC (PQN)" & sum(rv$sequence[[rv$activeFile]][, 1] %in% "QC") == 0) {
+      sendSweetAlert(session = session, title = "Error", text = "No QC samples in dataset.", type = "error")
+    } else if(input$normMethod == "Sample amount" & sum(complete.cases(rv$sequence[[rv$activeFile]][, 'amount'])) == 0) {
+      sendSweetAlert(session = session, title = "Error", text = "No sample amount information in dataset.", type = "error")
+    } else {
+      data <- rv$data[[rv$activeFile]]
+      sequence <- rv$sequence[[rv$activeFile]]
+      qualityControls <- data[, sequence[, 1] %in% "QC"] 
+      
+      normalizedData <- normalization(data, sequence, qualityControls, input$normMethod)
+      
+      data[, sequence[, 1] %in% c("QC", "Sample")] <- normalizedData
+      
+      rv$tmpData <- data
+      rv$tmpSequence <- sequence
+      
+      updateSelectInput(session, "selectpca1", selected = "Unsaved data", 
+                        choices = c("Unsaved data", rv$choices))
+      output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = 
+                                          list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
+      sendSweetAlert(title = "Success", text = paste0("Data normalized using ", input$normMethod), type = "success")
+    }
+  })
+  
+  observeEvent(input$saveNormalization, {
+    additionalInfo <- paste("Normalized with", input$normMethod, " method")
+    updateDataAndSequence("Normalize first", input$newFileNorm, "_normalized", additionalInfo)
+  })
+  
+  
+  ## Transformation ##
+  
+  observeEvent(input$transform, {
+    if (is.null(rv$activeFile)) {
+      showNotification("No data", type = "error")
+    } else if(input$logTransform == "None" & input$scaling == "None") {
+      sendSweetAlert(session = session, title = "Warning", text = "No method selected.", type = "warning")
+    } else {
+      data <- rv$data[[rv$activeFile]]
+      sequence <- rv$sequence[[rv$activeFile]]
+      
+      transformed <- transformation(data, sequence, input$logTransform, input$scaling)
+      
+      data[, sequence[, 1] %in% c("QC", "Sample")] <- transformed
+      rv$tmpData <- data
+      rv$tmpSequence <- sequence
+      
+      output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
+      sendSweetAlert(session, title = "Success", text = "Data transformed.", type = "success")
+    }
+  })
+  
+  observeEvent(input$saveTransform, {
+    additionalInfo <- paste(
+      "Transformed with log transformation: ", input$logTransform,
+      " and scaling: ", input$scaling
+    )
+    updateDataAndSequence("Transform first", input$newFileTransform, "_transformed", additionalInfo)
+  })
+  
+  
+  ## Statistical analysis ##
+  
+  observeEvent(input$testType, {
+    sequence <- rv$sequence[[rv$activeFile]]
+    enable("selectTest")
+    switch(input$testType,
+           GroupsUnpaired = {
+             if(!any(complete.cases(sequence[, 4]))) {
+               sendSweetAlert(session, "Oops!", "Invalid test. Provide information on different groups/conditions.", type = "error")
+               disable("selectTest")
+             }
+           },
+           GroupsPaired = {
+             if(!any(complete.cases(sequence[, 4]))) {
+               sendSweetAlert(session, "Oops!", "Invalid test. Provide information on different groups/conditions.", type = "error")
+               disable("selectTest")
+             }
+             if(!any(complete.cases(sequence[, 6]))) {
+               sendSweetAlert(session, "Oops!", "Invalid test. Indicate paired samples.", type = "error")
+               disable("selectTest")
+             }
+           },
+           GroupsTimeUnpaired = {
+             if(!any(complete.cases(sequence[, 4]))) {
+               sendSweetAlert(session, "Oops!", "Invalid test. Provide information on different groups/conditions.", type = "error")
+               disable("selectTest")
+             }
+             if(!any(complete.cases(sequence[, 5]))) {
+               sendSweetAlert(session, "Oops!", "Invalid test. Indicate time points.", type = "error")
+               disable("selectTest")
+             }
+           },
+           GroupsMultipleTime = {
+             if(any(complete.cases(sequence[, 5])) & any(complete.cases(sequence[, 6]))) {
+               sequence <- sequence[sequence[, 1] %in% "Sample" & complete.cases(sequence[, 4]), ]
+               group_time <- getGroupTime(sequence)
+               unique_values <- unique(group_time)
+               combinations <- combn(unique_values, 2)
+               valid_combinations <- combinations[, apply(combinations, 2, function(cols) is_valid_combination(cols[1], cols[2]))]
+               contrasts <- generate_contrasts(as.matrix(valid_combinations)) # matrix bc if it's only 1 combination, valid_combinations is not a matrix and generate_contrasts fails
+               updateCheckboxGroupInput(session, "contrasts", choices = contrasts, selected = NULL)
+             } else {
+               sendSweetAlert(session, "Oops!", "Invalid test. No paired samples or time points in dataset.", type = "error")
+               disable("selectTest")
+             }
+           },
+           CompareToReference = {
+             if(!any(complete.cases(sequence[, 4]))) { #TODO or only one group
+               sendSweetAlert(session, "Oops!", "Invalid test. Provide information on different groups/conditions.", type = "error")
+               disable("selectTest")
+             } else {
+               updateSelectInput(session, "referenceGroup", label = NULL, choices = na.omit(sequence[, 'group']))
+             }
+           },
+           {
+             print('default')
+           }
+    )
+  }, ignoreInit = TRUE
+  )
+  
+  observeEvent(input$selectTest, {
+    data <- rv$data[[rv$activeFile]]
+    sequence <- rv$sequence[[rv$activeFile]]
+    switch(input$testType, 
+           GroupsUnpaired = {
+             if(input$group1 == input$group2) {
+               sendSweetAlert(session, "Oops!", "Choose different groups to compare.", type="error")
+             } else {
+               results <- groupComparison(data, sequence, c(input$group1, input$group2))
+               rv$results[[rv$activeFile]][[length(rv$results[[rv$activeFile]])+1]] <- results
+               names(rv$results[[rv$activeFile]])[length(rv$results[[rv$activeFile]])] <- paste0(input$group1, "_vs_", input$group2)
+             }
+           },
+           GroupsPaired = {
+             if(input$group1 == input$group2) {
+               sendSweetAlert(session, "Oops!", "Choose different groups to compare.", type="error")
+             } else {
+               results <- groupComparisonPaired(data, sequence, c(input$group1, input$group2))
+               rv$results[[rv$activeFile]][[length(rv$results[[rv$activeFile]])+1]] <- results
+               names(rv$results[[rv$activeFile]])[length(rv$results[[rv$activeFile]])] <- paste0(input$group1, "_vs_", input$group2)
+             }
+           },
+           GroupsTimeUnpaired = {
+             groups <- c(input$group1_time, input$group2_time)
+             times <- c(input$time1_time, input$time2_time)
+             groupTime <- paste(groups, times, sep = "_")
+             print(groupTime)
+             results <- groupComparisonTime(data, sequence, groups, times)
+             rv$results[[rv$activeFile]][[length(rv$results[[rv$activeFile]])+1]] <- results
+             names(rv$results[[rv$activeFile]])[length(rv$results[[rv$activeFile]])] <- paste0(input$group1, "_vs_", input$group2)
+           },
+           GroupsMultipleTime = { # multi-level in limma 
+             data <- data[sequence[, 1] %in% c("Name", "Sample")]
+             sequence <- sequence[sequence[, 1] %in% c("Sample"), ]
+             
+             group_time <- getGroupTime(sequence)
+             group_time <- factor(group_time, exclude = NA)
+             paired <- factor(sequence[, 'paired'],  exclude = NA)
+             results <- pairedAnalysis(data, group_time, input$contrasts, paired)
+             
+             rv$results[[rv$activeFile]] <- results
+           },
+           CompareToReference = {
+             data <- data[sequence[, 1] %in% c("Name", "Sample")]
+             groups <- sequence[complete.cases(sequence[, 4]), 4]
+             results <- referenceGroupComparison(data, as.numeric(input$referenceGroup), groups)
+             rv$results[[rv$activeFile]][[length(rv$results[[rv$activeFile]])+1]] <- results
+           },
+           {
+             print('default')
+           }
+    )
+    # Render one table for each contrast
+    output$results_ui <- renderUI({
+      lapply(seq_along(rv$results[[rv$activeFile]]), function(i) {
+        fluidRow(
+          column(12, strong(names(rv$results[[rv$activeFile]])[i])),
+          column(12, box(width = NULL, DTOutput(paste0("results", i))))
+        )
+      })
+    })
+    lapply(seq_along(rv$results[[rv$activeFile]]), function(i) {
+      output[[paste0("results", i)]] <- renderDT(
+        rv$results[[rv$activeFile]][[i]], options = list(scrollX = TRUE)
+      )
+    })
+  })
+  
+  
+  ## Send data to PolySTest and VSClust ##
+  
+  observeEvent(input$export_polystest, {
+    sequence <- rv$sequence[[rv$activeFile]]
+    tdata <- rv$data[[rv$activeFile]][, sequence[, 1] %in% c("Name",  "Sample")]
+    groups <- c(input$group1_polystest, input$group2_polystest)
+    time <- c(input$time1_polystest, input$time2_polystest)
+    selected <- selectPolySTest(tdata, sequence, groups, time)
+    PolySTestMessage <- prepareMessage2(selected$selected, selected$selected_sequence, time)
+    js$send_message(url="http://computproteomics.bmb.sdu.dk:443/app_direct/PolySTest/", 
+                    dat=PolySTestMessage, tool="PolySTest")
+  })
+  
+  observeEvent(input$send_polystest, {
+    sequence <- rv$sequence[[rv$activeFile]]
+    tdata <- rv$data[[rv$activeFile]][, sequence[, 1] %in% c("Name",  "Sample")]
+    tseq <- sequence[sequence[, 1] %in% c("Name",  "Sample"), ]
+    time <- complete.cases(tseq[, 5])
+    if(any(complete.cases(tseq[, 5]))) {
+      time <- unique(tseq[complete.cases(tseq[, 5]), 5])
+    } else {
+      time <- c("")
+    }
+    PolySTestMessage <- prepareMessage2(tdata, tseq, time)
+    js$send_message(url="http://computproteomics.bmb.sdu.dk:443/app_direct/PolySTest/", 
+                    dat=PolySTestMessage, tool="PolySTest")
+  })
+  
+  observeEvent(input$send_vsclust, {
+    sequence <- rv$sequence[[rv$activeFile]]
+    tdata <- rv$data[[rv$activeFile]][, sequence[, 1] %in% c("Name",  "Sample")]
+    tseq <- sequence[sequence[, 1] %in% c("Name",  "Sample"), ]
+    VSClustMessage <- prepareMessage2(tdata, tseq)
+    js$send_message(url="http://computproteomics.bmb.sdu.dk/app_direct/VSClust/",
+                    dat=VSClustMessage, tool="VSClust")
+  })
+  
   
   
   
@@ -950,6 +1381,7 @@ shinyServer(function(session, input, output) {
   observeEvent(input$run_process, {
     values$runProcessClicked <- TRUE
     
+    # Requried data files are loaded
     sequence <- rv$sequence[[rv$activeFile]]
     data <- rv$data[[rv$activeFile]]
     
@@ -957,26 +1389,29 @@ shinyServer(function(session, input, output) {
     data <- data[, sequence[ , 'labels'] %in% c("Name","Sample")]
     sequence <- sequence[sequence[ , 'labels'] %in% c("Name","Sample"), ]
     
-    # Check if the sequence is uploaded before proceeding
-    if (is.null(sequence)) {
-      return(NULL)  # Stop the observeEvent if no file is uploaded
-    }
-    
     # Capture the number of rows before filtering, used to compare with the number of rows after filtering
     number_of_rows_before <- nrow(data)
     
     
-    # Cleaning the noise of the data, by calling functions
-    # Apply the `extract_pattern` function to the first column of the dataset
-    # Removes all noise from compound name, so name and length is the only left: eg. going from "CAR 14:1'CAR'[M+H]+" to "CAR 14:1"
+    
+    ###############
+    # Data cleaning
+    ###############
+    # Removes noise, keeping only the name and length (e.g., "CAR 14:1'CAR'[M+H]+" becomes "CAR 14:1")
     data[, 1] <- sapply(data[, 1], extract_pattern)
     
-    # Puts the length and double bonds numbers into a (). Eg "CAR 14:1" to "CAR(14:1)"
+    # 3. Apply the `remove_ether_lipids` function to filter out ether lipids (O- or P- prefixed lipids)
+    data[, 1] <- sapply(data[, 1], remove_ether_lipids)
+    
+    # 2. Apply the `clean_lipid_name` function to remove content after semicolons inside parentheses
+    data[, 1] <- sapply(data[, 1], clean_lipid_name)
+    
+    # 4. Apply the `format_strings` function to ensure the lipid names are properly formatted, adding parentheses around numbers if necessary
     data[, 1] <- sapply(data[, 1], format_strings)
+    
     
     # Function to filter rows based on the specified pattern, meaning removes any data that are not on X(C:D) format.
     data <- filter_data_by_pattern(data)
-    
     
     
     # This will make it possible to switch between original data and merged data. OG data: using _1 _2 ... _n. Merged will sum the values of the "duplicated" data. 
@@ -986,15 +1421,13 @@ shinyServer(function(session, input, output) {
       data <- merge_duplicates(data)
     }
     
-    # Some data are in NA, calculations cannot read this, therefore NA values are set low. 
-    data[is.na(data)] <- 0.000001 ##### Need a different approach to this.
+    
     
     # Capture the number of rows after filtering
     number_of_rows_after <- nrow(data)
     
     # Calculate the number of rows removed
     rows_removed <- number_of_rows_before - number_of_rows_after
-    
     output$rows_removed_text <- renderText({
       paste("Rows removed after data cleaning are:", rows_removed, ". The removal is be due to the names in the first column of the data file not being in the X(C:D) format. Keep in mind, that a merged data will also count as a removed row.")
     })
@@ -1002,22 +1435,18 @@ shinyServer(function(session, input, output) {
     
     
     # The following is used in the tab: 'Lipid summary'.
-    grouped_samples <- process_lipid_data(sequence, data)
-    
+    #grouped_samples <- process_lipid_data(sequence, data) # not used?
     output$groups_table <- renderTable({
-      if (is.null(grouped_samples)) {
-        return()
-      }
       
-      # Extract the 'Sample' labels and corresponding 'class' from 'sequence'
+      # Extract the 'Sample' labels and corresponding 'group' from 'sequence'
       sample_rows <- sequence[sequence$labels == "Sample", ]
-      unique_groups <- unique(sample_rows$class)
+      unique_groups <- unique(sample_rows$group)
       
       # Create the dataframe to be displayed as a table
       lipid_df_processed_data <- data.frame(
         Group = unique_groups,
         Samples = sapply(unique_groups, function(group) {
-          sample_identifiers <- rownames(sample_rows)[sample_rows$class == group]
+          sample_identifiers <- rownames(sample_rows)[sample_rows$group == group]
           paste(sample_identifiers, collapse = ", ")
         })
       )
@@ -1030,8 +1459,11 @@ shinyServer(function(session, input, output) {
     # Heatmap input selection  
     observeEvent(input$run_process, {
       processed_results <- process_lipid_data(sequence, data)
-      grouped_data_frames <- create_grouped_data_frames(sequence, data)
-
+      grouped_data_frames <<- create_grouped_data_frames(sequence, data)
+      
+      
+      
+      
       compound_names <- data[[1]]  # Extract the first column which contains compound names
       
       # Assuming that each grouped data frame has rows in the same order as "data"
@@ -1040,7 +1472,7 @@ shinyServer(function(session, input, output) {
       }
       
       # Extract unique group names from sequence
-      unique_group_names <- unique(sequence[sequence$labels == "Sample", "class"])
+      unique_group_names <- unique(sequence[sequence$labels == "Sample", "group"])
       
       # Check if lengths of group names and grouped data frames match
       if (length(unique_group_names) == length(grouped_data_frames)) {
@@ -1054,8 +1486,9 @@ shinyServer(function(session, input, output) {
       # Render the UI for group selection.
       output$select_group_ui_heatmap <- renderUI({
         column(
-          title = "Select groups for Heatmap",
+          title = "Select groups for Heatmap test",
           width = 12,
+          
           
           tagList(
             selectInput("selected_group_for_numerator", "Select Group for numerator:",
@@ -1100,6 +1533,108 @@ shinyServer(function(session, input, output) {
                    trigger = "hover")
       })
       
+      # Message shown when hovering over logFC. 
+      observe({
+        addTooltip(session, "logFC_input_ui", 
+                   "Displays lipids where the absolute value of logFC is greater than or equal to the threshold. For example, entering '1' will include lipids with logFC ≥ 1 or logFC ≤ -1.", 
+                   placement = "bottom", 
+                   trigger = "hover")
+      })
+      
+      
+      
+      
+      # Reactive expression to calculate logFC
+      reactiveLogFC <- reactive({
+        # The required data input for the data handling. 
+        req(input$selected_group_for_numerator, input$selected_group_for_denominator)
+        
+        # Define data input, makes it more readable 
+        numerator_data <- grouped_data_frames[[input$selected_group_for_numerator]]
+        denominator_data <- grouped_data_frames[[input$selected_group_for_denominator]]
+        
+        
+        # Ensure there is data to work with
+        if (nrow(numerator_data) == 0 || nrow(denominator_data) == 0) {
+          return(NULL)
+        }
+        
+        # Removes the fir column of the data, as it is not needed for the calculation.
+        numerator_data <- numerator_data[, -1]
+        denominator_data <- denominator_data[, -1]
+        
+        numerator_data_means <- rowMeans(numerator_data[, drop = FALSE], na.rm = TRUE) # Makes sure that the calculation is done even NA values are present. 
+        denominator_data_means <- rowMeans(denominator_data[, drop = FALSE], na.rm = TRUE)
+        numerator_data_means <- data.frame(numerator_data_means)
+        denominator_data_means <- data.frame(denominator_data_means)
+        
+        # Extract the compound names, to add it to the data frame logFC, making sure they are sorted by compound names. 
+        compound_names <- data[[1]]
+        
+        # Calculate logFC
+        logFC_data <- log2((numerator_data_means + 1e-6) / (denominator_data_means + 1e-6))
+        # Rename a single column
+        colnames(logFC_data)[colnames(logFC_data) == "numerator_data_means"] <- "logFC"
+        
+        logFC <- data.frame(Compound_Name = compound_names, logFC = logFC_data)
+        
+        
+        # Continue filtering based on lipid selection
+        if (!"All" %in% input$selected_lipid) {
+          logFC <- logFC[lipid_names$group %in% input$selected_lipid, ]
+        }
+        
+        filtered_data <- logFC
+        return(filtered_data) # Used for Heatmap display 
+      })
+      
+      
+      reactiveP_value <- reactive({
+        req(input$selected_group_for_numerator, input$selected_group_for_denominator)
+        
+        numerator_data <- grouped_data_frames[[input$selected_group_for_numerator]]
+        denominator_data <- grouped_data_frames[[input$selected_group_for_denominator]]
+        
+        # Ensure there is data to work with
+        if (nrow(numerator_data) == 0 || nrow(denominator_data) == 0) {
+          return(NULL)
+        }
+        
+        # Initialize a vector to store the p-values
+        p_values <- numeric(nrow(numerator_data))
+        
+        # Loop through each row to perform the t-test
+        for (i in 1:nrow(numerator_data)) {
+          # Extract the numerical values for numerator and denominator, excluding the first column
+          num_values <- numerator_data[i, -1]
+          denom_values <- denominator_data[i, -1]
+          
+          # Check if data is constant or contains NA values
+          if (length(unique(num_values)) == 1 || length(unique(denom_values)) == 1 ||
+              any(is.na(num_values)) || any(is.na(denom_values))) {
+            p_values[i] <- NA  # Assign NA or another appropriate value
+          } else {
+            # Perform the t-test
+            t_test_result <- t.test(num_values, denom_values)
+            p_values[i] <- t_test_result$p.value
+          }
+        }
+        
+        # Apply Benjamini-Hochberg correction to p-values
+        adjusted_p_values <- p.adjust(p_values, method = "BH")
+        
+        # Create a new data frame with 'Compound_Name', 'p_value', and 'padj'
+        p_value_data <- data.frame(
+          Compound_Name = numerator_data$Compound_Name,  
+          p_value = p_values,
+          padj = adjusted_p_values
+        )
+        
+        # Filter p-values on adjusted_p_values based on ui input
+        p_value_data <- p_value_data[!is.na(p_value_data$padj) & p_value_data$padj < input$p_value_adj, ]
+        return(p_value_data)
+      })
+      
       
       # Render UI for maximum p-value input
       output$p_value_max_ui <- renderUI({
@@ -1110,104 +1645,35 @@ shinyServer(function(session, input, output) {
                      step = 0.01)
       })
       
-      # Render UI for logFC input
+      # Render UI for maximum p-value input
+      output$p_value_adj <- renderUI({
+        numericInput("p_value_adj", 
+                     "Maximum p-value_adj:", 
+                     value = 1, 
+                     min = 0, 
+                     step = 0.01)
+      })
+      
       output$logFC_input_ui <- renderUI({
-        numericInput("logFC_input", 
-                     "Enter logFC value:", 
-                     value = 5)
-      })
-      
-      
-      # Dynamic logFC depended on interface
-      reactive_max_logFC <- reactive({
-        input$logFC_input  # This will be the positive value
-      })
-      
-      reactive_min_logFC <- reactive({
-        -input$logFC_input  # This will be the negative value
-      })
-      
-      
-      # Reactive expression to calculate logFC
-      reactiveLogFC <- reactive({
-        # The required data input for the data handling. 
-        req(input$selected_group_for_numerator, input$selected_group_for_denominator)
-        req(reactive_max_logFC(), reactive_min_logFC())
-
-        # Define data input, makes it more readable 
-        numerator_data <- grouped_data_frames[[input$selected_group_for_numerator]]
-        denominator_data <- grouped_data_frames[[input$selected_group_for_denominator]]
-
-        # Ensure there is data to work with
-        if (nrow(numerator_data) == 0 || nrow(denominator_data) == 0) {
-          return(NULL)
-        }
-        
-        numerator_data <- numerator_data[, -1]
-        denominator_data <- denominator_data[, -1]
-
-        numerator_data_means <- rowMeans(numerator_data[, drop = FALSE], na.rm = TRUE)
-        denominator_data_means <- rowMeans(denominator_data[, drop = FALSE], na.rm = TRUE)
-        numerator_data_means <- data.frame(numerator_data_means)
-        denominator_data_means <- data.frame(denominator_data_means)
-
-        compound_names <- data[[1]]
-        
-        # Calculate logFC
-        logFC_data <- log2((numerator_data_means + 1e-6) / (denominator_data_means + 1e-6))
-        # Rename a single column
-        colnames(logFC_data)[colnames(logFC_data) == "numerator_data_means"] <- "logFC"
-        
-        logFC <- data.frame(Compound_Name = compound_names, logFC = logFC_data)
-       
-
-        # Continue filtering based on lipid selection
-        if (!"All" %in% input$selected_lipid) {
-          logFC <- logFC[lipid_names$Class %in% input$selected_lipid, ]
-        }
-        
-        # Filter based on the input logFC range
-        filtered_data <- logFC[logFC$logFC >= reactive_min_logFC() & logFC$logFC <= reactive_max_logFC(), ]
-
-        return(filtered_data) # Used for Heatmap display 
-      })
-
-      
-      
-      reactiveP_value <- reactive({
-        req(input$selected_group_for_numerator, input$selected_group_for_denominator)
-        
-        numerator_data <- grouped_data_frames[[input$selected_group_for_numerator]]
-        denominator_data <- grouped_data_frames[[input$selected_group_for_denominator]]
-
-        # Initialize a vector to store the p-values
-        p_values <- numeric(nrow(numerator_data))
-        
-        # Loop through each row to perform the t-test
-        for (i in 1:nrow(numerator_data)) {
-          # Perform t-test directly on the data without unlisting
-          t_test_result <- t.test(numerator_data[i, -1], denominator_data[i, -1])
-          p_values[i] <- t_test_result$p.value
-        }
-        
-        # Create a new data frame with 'Compound_Name' and 'p_value'
-        p_value_data <- data.frame(
-          Compound_Name = numerator_data$Compound_Name,  
-          p_value = p_values
+        tagList(
+          numericInput("logFC_input", 
+                       "Enter logFC threshold:", 
+                       value = 0,
+                       min = 0)
         )
       })
       
-
       
       reactiveFilteredData <- reactive({
         logFC_data <- reactiveLogFC()  
-        p_value_data <- reactiveP_value()  
+        p_value_data <- reactiveP_value()
+        
         filtered_data <- merge(logFC_data, p_value_data, by = "Compound_Name")
         
         # Apply filtering criteria, thresholds for both logFC and p-value
         filtered_data <- filtered_data %>%
           filter(!is.na(p_value) & p_value <= input$p_value_max) %>%
-          filter(logFC >= reactive_min_logFC() & logFC <= reactive_max_logFC())
+          filter(abs(logFC) >= input$logFC_input)
         
         return(filtered_data)
       })
@@ -1217,10 +1683,10 @@ shinyServer(function(session, input, output) {
       # Interface of selections of lipids to display
       output$select_lipid_ui <- renderUI({
         # Extract the lipid names from first column of the file 'data'
-        lipid_names <<- group_lipids_by_class(data)
+        lipid_names <<- group_lipids_by_group(data)
         
         selectizeInput("selected_lipid", "Select lipid(s) to display:",
-                       choices = c("All", unique(lipid_names$Class)),
+                       choices = c("All", unique(lipid_names$group)),
                        multiple = TRUE,
                        options = list(placeholder = 'Choose lipids...',
                                       onInitialize = I('function() { this.setValue(""); }')))
@@ -1237,21 +1703,39 @@ shinyServer(function(session, input, output) {
       })
       
       
+      
 
-      output$heatmapPlot <- renderPlot({
-
+      # Within your server function
+      
+      # Reactive expression for heatmap plot data and height
+      heatmap_plot_data <- reactive({
         # Take the input from user in interface and change p-value and logFC
         filtered_data <- reactiveFilteredData()
-
+        
         # Ensure the data is not NULL and has rows to plot
         req(nrow(filtered_data) > 0)
-
-        # Get the count of selected lipids
-        num_of_lipids <- selected_lipid_count()
         
-        # Ensure compound_names are available
+        # Map the lipid names (make sure it returns all necessary columns, including Lipid_Class)
         names.mapping <- map_lipid_names(x = filtered_data$Compound_Name)
         
+        # Calculate the number of unique classes
+        num_classes <- length(unique(names.mapping$Class))
+        
+        # Calculate number of rows in the facets
+        ncol_facets <- 3  # Adjust based on your facet_wrap setting
+        num_rows <- ceiling(num_classes / ncol_facets)
+        
+        # Set base height per row
+        height_per_row <- 300  # Adjust as needed to match bubble plot scaling
+        
+        # Calculate total plot height
+        total_plot_height <- num_rows * height_per_row
+        
+        # Ensure minimum and maximum height limits
+        total_plot_height <- max(total_plot_height, 600)   # Minimum height
+        total_plot_height <- min(total_plot_height, 4000)  # Maximum height
+        
+        # Use lipid_data in the heatmap_lipidome function
         heatmap_plot <- heatmap_lipidome(
           x = filtered_data[ , c("Compound_Name", "logFC")],
           names.mapping = names.mapping,
@@ -1263,29 +1747,52 @@ shinyServer(function(session, input, output) {
           scales = "free"
         ) +
           scale_fill_gradient2(
-            low = "#4575b4",
-            mid = "white",
-            high = "#d73027",
+            low = input$low_color,
+            mid = input$mid_color,
+            high = input$high_color,
             midpoint = 0,
             limit = c(-2.5, 2.5),
             space = "Lab",
-            name = "logFC"
+            name = "logFC",
+            guide = guide_colorbar(
+              barwidth = 15, # Adjust width of color bar
+              barheight = 1  # Adjust height of color bar
+            )
           ) +
-          facet_wrap(~ Class, scales = "free", ncol = 3) +
-          
-          # Use the named vector for lipid N.carbons labels
-          
+          facet_wrap(~ Class, scales = "free", ncol = ncol_facets) +
           theme(
-            panel.background = element_rect(fill = "#D3D3D3", color = "white"),
-            strip.background = element_rect(fill = "#3483d1", color = "white"),
-            strip.text = element_text(color = "black", face = "bold"),
-            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)  # Rotate lipid names for readability
+            panel.background = element_rect(fill = input$panel_bg_color, color = "white"),
+            strip.background = element_rect(fill = input$strip_bg_color, color = "white"),
+            strip.text = element_text(color = input$strip_text_color, face = "bold", size = 16),
+            axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12),
+            axis.text.y = element_text(size = 12),
+            axis.title = element_text(size = 20),
+            legend.title = element_text(size = 18),
+            legend.text = element_text(size = 14)
           )
         
-        # Return the heatmap plot
-        heatmap_plot
+        # Conditionally remove grid lines based on user input
+        if (!input$show_grid) {
+          heatmap_plot <- heatmap_plot +
+            theme(
+              panel.grid.major = element_blank(),
+              panel.grid.minor = element_blank()
+            )
+        }
         
+        # Return the plot and height
+        list(plot = heatmap_plot, height = total_plot_height)
       })
+      
+      # Render the heatmap plot
+      output$heatmapPlot <- renderPlot({
+        heatmap_plot_data()$plot
+      }, height = function() {
+        heatmap_plot_data()$height
+      })
+      
+      
+      
       
       
       
@@ -1295,23 +1802,18 @@ shinyServer(function(session, input, output) {
         
         # Ensure the data is not NULL and has rows to plot
         req(nrow(filtered_lipid_data) > 0)
-
+        
         # Map the lipid names (make sure it returns all necessary columns, including Lipid_Class)
         names.mapping <- map_lipid_names(x = filtered_lipid_data$Compound_Name)
         
-        # Create a data frame containing the necessary lipid information
-        lipid_data <- data.frame(
-          Compound.Name = names.mapping$Name,
-          Lipid_Class = names.mapping$Name.simple,  
-          Carbon_Length = names.mapping$N.carbons,
-          Double_Bonds = names.mapping$N.double.bonds,
-          Concentration = filtered_lipid_data$logFC,
-          p_value = filtered_lipid_data$p_value,
-          Class = names.mapping$Class  # Ensure we are grouping by class
-        )
-        
         # Filter out rows with any NA values
-        lipid_data <- lipid_data[complete.cases(lipid_data), ]
+        filtered_lipid_data <- filtered_lipid_data[complete.cases(filtered_lipid_data), ]
+        
+        # Merge mapped names with filtered lipid data
+        lipid_data <- cbind(
+          filtered_lipid_data, 
+          names.mapping[, c("Name.simple", "N.carbons", "N.double.bonds", "Class")]
+        )
         
         # Define size bins for the p-values with appropriate labels
         lipid_data$size_category <- cut(
@@ -1348,8 +1850,8 @@ shinyServer(function(session, input, output) {
         total_plot_height <- min(total_plot_height, 4000)  # Maximum height
         
         
-        bubble_plot <- ggplot(lipid_data, aes(x = Carbon_Length, y = Double_Bonds, size = size_category, 
-                                              color = Concentration)) +
+        bubble_plot <- ggplot(lipid_data, aes(x = N.carbons, y = N.double.bonds, size = size_category, 
+                                              color = logFC)) +
           geom_point(alpha = 0.7) +
           scale_color_gradient2(
             low = "#4575b4",         
@@ -1365,8 +1867,6 @@ shinyServer(function(session, input, output) {
             name = "p-value range"
           ) +
           facet_wrap(~ Class, scales = "free", ncol = ncol_facets) +
-          
-          
           
           theme_minimal() +
           theme(
@@ -1384,7 +1884,6 @@ shinyServer(function(session, input, output) {
             panel.spacing = unit(1, "lines")  # Increase spacing between facets
           )
         
-        
         # Convert ggplot to plotly object with dynamic height
         p <- ggplotly(bubble_plot, width = 1000, height = total_plot_height)
         
@@ -1401,7 +1900,6 @@ shinyServer(function(session, input, output) {
             p$x$data[[i]]$marker$colorbar$thickness <- 10
           }
         }
-        
         
         # Adjust the legend position and layout to reduce spacing
         p <- p %>%
@@ -1423,7 +1921,6 @@ shinyServer(function(session, input, output) {
             )
           )
         
-        
         # Return the plot and height
         list(plot = p, height = total_plot_height)
       })
@@ -1442,44 +1939,183 @@ shinyServer(function(session, input, output) {
       })
       
       
-      output$heatmap_ui <- renderUI({
-        # Use the reactive expression to get the number of selected lipids or if "All" is selected
-        num_selected_lipids <- selected_lipid_count()
-        
-        # Dynamically adjust the height based on the number of selected lipids using nested ifelse
-        height <- ifelse(num_selected_lipids > 0 & num_selected_lipids <= 3, "800px", 
-                         ifelse(num_selected_lipids > 3 & num_selected_lipids <= 6, "1200px", "2000px"))
-        
-        plotOutput("heatmapPlot", width = "100%", height = height)
+      
+      # Add this code outside of observeEvent blocks
+      output$visualization_ui <- renderUI({
+        if (input$split_screen) {
+          # Show both heatmap and table side by side
+          fluidRow(
+            column(width = 6,
+                   div(style = "width: 100%; height: 800px; overflow-y: scroll;",  
+                       plotOutput("heatmapPlot", width = "100%", height = "800px")
+                   )
+            ),
+            column(width = 6,
+                   div(style = "width: 100%; height: 800px; overflow-y: scroll;",  
+                       dataTableOutput("pValueTable_2")
+                   )
+            )
+          )
+        } else {
+          # Show only heatmap
+          div(style = "width: 100%; height: 2000px; overflow-y: scroll;",  
+              plotOutput("heatmapPlot", width = "100%", height = "2000px")
+          )
+        }
       })
       
       
-      # Render the tables for the 'Lipid summeray'
-      output$lipid_class_count <- DT::renderDataTable({
-        lipid_names <<- group_lipids_by_class(data)
-        lipid_class_count <- table(lipid_names$Class)  
-        lipid_class_df <- as.data.frame(lipid_class_count)
-        colnames(lipid_class_df) <- c("Lipid Class", "Count")
+      
+      
+      # Reactive expression to calculate lipid group summary and total lipid count
+      lipid_summary <- reactive({
+        lipid_group_df <- as.data.frame(table(group_lipids_by_group(data)$group)) 
+        colnames(lipid_group_df) <- c("Lipid group", "Count")
         
-        # Return the data frame as a datatable
-        DT::datatable(lipid_class_df, options = list(pageLength = 5, autoWidth = TRUE))
+        # Calculate and add percentage of total lipids
+        lipid_group_df$`Percentage of Total` <- round((lipid_group_df$Count / sum(lipid_group_df$Count)) * 100, 2)
+        
+        return(lipid_group_df)  # Return the dataframe for use in other parts
       })
       
-
+      # Function to generate lipid group summary and percentage for the table
+      output$lipid_group_count <- DT::renderDataTable({
+        lipid_group_df <- lipid_summary()  # Use the reactive expression
+        
+        # Render the table
+        DT::datatable(lipid_group_df, options = list(pageLength = 5, autoWidth = TRUE))
+      })
+      
+      # Render total lipids as a text output
+      output$lipid_total <- renderText({
+        lipid_group_df <- lipid_summary()  # Use the reactive expression
+        lipidsum <- sum(lipid_group_df$Count)
+        paste("Total lipid count in table (After data cleaning):", lipidsum)
+      })
+      
       
       
       output$pValueTable <- renderDataTable({
         filtered_data <- reactiveFilteredData()
         
-        dataTableToShow <- filtered_data[, c("Compound_Name", "logFC", "p_value")]
+        dataTableToShow <- filtered_data[, c("Compound_Name", "logFC", "p_value", "padj")]
         
         # Round 'logFC' and 'p_value' to the desired number of decimal places
         dataTableToShow$logFC <- round(dataTableToShow$logFC, 5)      # 5 decimal places for logFC
         dataTableToShow$p_value <- round(dataTableToShow$p_value, 5)  # 5 decimal places for p-value
-
+        dataTableToShow$padj <- round(dataTableToShow$padj, 5)  # 5 decimal places for p-value
+        
+        
         # Render the selected data in a DataTable
         datatable(dataTableToShow, options = list(pageLength = 10, scrollX = TRUE))
       })
+      
+      
+      output$pValueTable_2 <- renderDataTable({
+        filtered_data <- reactiveFilteredData()
+        
+        dataTableToShow <- filtered_data[, c("Compound_Name", "logFC", "p_value", "padj")]
+        
+        # Round 'logFC' and 'p_value' to the desired number of decimal places
+        dataTableToShow$logFC <- round(dataTableToShow$logFC, 5)      # 5 decimal places for logFC
+        dataTableToShow$p_value <- round(dataTableToShow$p_value, 5)  # 5 decimal places for p-value
+        dataTableToShow$padj <- round(dataTableToShow$padj, 5)  # 5 decimal places for p-value
+        
+        
+        # Render the selected data in a DataTable
+        datatable(dataTableToShow, options = list(pageLength = 10, scrollX = TRUE))
+      })
+      
+      
+      
+      
+      
+      # Observe the action button to open the modal dialog
+      observeEvent(input$download_heatmap_btn, {
+        showModal(modalDialog(
+          title = "Download Heatmap Image",
+          selectInput("modal_image_format", "Select Image Format", choices = c("PNG" = "png", "PDF" = "pdf", "JPEG" = "jpeg")),
+          numericInput("modal_image_dpi", "Image Resolution (DPI)", value = 300, min = 72, step = 72),
+          footer = tagList(
+            modalButton("Cancel"),
+            downloadButton("modal_download_heatmap", "Download")
+          )
+        ))
+      })
+      
+      
+      
+      
+      # Reactive expression to calculate plot dimensions
+      plot_dimensions <- reactive({
+        # Take the input from user in interface and change p-value and logFC
+        filtered_data <- reactiveFilteredData()
+        
+        # Ensure the data is not NULL and has rows to plot
+        req(nrow(filtered_data) > 0)
+        
+        # Map the lipid names (make sure it returns all necessary columns, including Lipid_Class)
+        names.mapping <- map_lipid_names(x = filtered_data$Compound_Name)
+        
+        # Calculate the number of unique classes
+        num_classes <- length(unique(names.mapping$Class))
+        
+        # Calculate number of rows in the facets
+        ncol_facets <- 3  # Adjust based on your facet_wrap setting
+        num_rows <- ceiling(num_classes / ncol_facets)
+        
+        # Set base dimensions per row/column
+        height_per_row <- 3  # in inches
+        width_per_col <- 4   # in inches
+        
+        # Calculate total plot dimensions
+        total_height <- num_rows * height_per_row
+        total_width <- ncol_facets * width_per_col
+        
+        # Ensure minimum and maximum limits
+        total_height <- max(total_height, 6)   # Minimum height in inches
+        total_height <- min(total_height, 40)  # Maximum height in inches
+        total_width <- max(total_width, 8)     # Minimum width in inches
+        total_width <- min(total_width, 40)    # Maximum width in inches
+        
+        # Return the dimensions
+        list(height = total_height, width = total_width)
+      })
+      
+      
+      
+      # Download handler for the heatmap plot from the modal dialog
+      output$modal_download_heatmap <- downloadHandler(
+        filename = function() {
+          paste("heatmap_plot_", Sys.Date(), ".", input$modal_image_format, sep = "")
+        },
+        content = function(file) {
+          # Generate the plot
+          heatmap_plot <- heatmap_plot_data()$plot
+          
+          # Get plot dimensions
+          dims <- plot_dimensions()
+          total_height <- dims$height  # in inches
+          total_width <- dims$width    # in inches
+          
+          # Save the plot with user-specified format and resolution
+          ggsave(
+            filename = file,
+            plot = heatmap_plot,
+            device = input$modal_image_format,
+            width = total_width,    # Width in inches
+            height = total_height,  # Height in inches
+            units = "in",
+            dpi = input$modal_image_dpi
+          )
+          
+          # Close the modal dialog after download
+          removeModal()
+        }
+      )
+      
+      
+      
       
       
       
@@ -1497,20 +2133,26 @@ shinyServer(function(session, input, output) {
   # Outside of the observeEvent, so the message both are shown before and after runProcessClicked is clicked. 
   observe({
     addTooltip(session, "selected_dataset", 
-               "Choose 'Original Data' to work with the data as it was initially collected. Select 'Merged Data' for a combined and cleaned dataset.", 
+               "Choose 'Original Data' to work with the data as it was initially collected, all sum isoforms is within the data. Select 'Merged Data' for a combined dataset, meaning sum lipids are added togehter.", 
                placement = "bottom", 
                trigger = "hover")
   })
   
   
   
+  
+  
+  
+  
   # User guide inside 'Heatmap'
   observeEvent(input$show_lipid_info, {
     showModal(modalDialog(
-      title = "Lipid summeray",
+      title = "Lipid Summary",
       textOutput("rows_removed_text"),
-      textOutput(" "),
-      dataTableOutput("lipid_class_count"),
+      textOutput("lipid_total"),  # Display the total number of lipids
+      
+      
+      dataTableOutput("lipid_group_count"),  # Lipid group count table
       
       easyClose = TRUE,
       footer = modalButton("Close")
@@ -1520,523 +2162,26 @@ shinyServer(function(session, input, output) {
   
   observeEvent(input$show_lipid_cal, {
     showModal(modalDialog(
-      title = "Lipid cal",
-      textOutput("rows_removed_text"),
-      textOutput(" "),
-
+      title = "Lipid Calculation",
+      div(
+        tags$b("logFC: "), 
+        withMathJax("$$\\log_2\\left( \\frac{\\text{mean of group numerator} + 10^{-6}}{\\text{mean of group denominator} + 10^{-6}} \\right)$$")
+      ),
+      div(
+        tags$b("logFC: "), 
+        "+10^-6 is added to avoid division by zero. The logFC is calculated for each lipid, 
+        comparing the mean of the numerator group to the mean of the denominator group, 
+        making sure all sample values are taking into account."
+      ),
+      div(
+        tags$b("p-value: "), 
+        "The p-value is calculated using a Welch’s t-test, comparing the raw data between the two groups for each lipid. 
+       The data used is not filtered by p-value or logFC thresholds beforehand, ensuring an unbiased comparison."
+      ),
       easyClose = TRUE,
       footer = modalButton("Close")
     ))
   })
-  
-  
-  
-  
-  
-  observeEvent(input$drift_1, {
-    rv$drift_plot_select <- 1
-  })
-  
-  observeEvent(input$drift_2, {
-    rv$drift_plot_select <- 2
-  })
-  
-  observeEvent(input$drift_3, {
-    rv$drift_plot_select <- 3
-  })
-  
-  output$drift_ui <- renderUI({
-    box(
-      width = NULL,
-      if (is.null(rv$activeFile)) {
-        p("No data")
-      } else if (input$drift_select != "None" && nrow(rv$data[[rv$activeFile]]) != nrow(rv$data[[which(rv$choices %in% input$drift_select)]])) {
-        p("Not able to compare the selected datasets")
-      } else if (input$drift_select == "None" && rv$drift_plot_select == 2) {
-        p("Need dataset to compare with")
-      } else if (is.null(input$dt_drift_panel_rows_selected) && rv$drift_plot_select == 1) {
-        p("Select feature to plot")
-      } else if (rv$drift_plot_select == 1) {
-        lapply(1:length(input$dt_drift_panel_rows_selected), function(i) {
-          fluidRow(
-            column(6, plotOutput(paste0("driftplotoutput", i), height = 280, width = "100%")),
-            column(6, plotOutput(paste0("driftplotoutput2", i), height = 280, width = "100%"))
-          )
-        })
-      } else if (rv$drift_plot_select == 2) {
-        fluidRow(column(12, plotOutput("cvscatterplot", height = 600, width = "100%")))
-      } else {
-        p("Nothing here yet")
-      }
-    )
-  })
-  
-  output$boxplot_ui <- renderUI({
-    box(
-      width = NULL,
-      if (is.null(rv$activeFile)) {
-        p("No data")
-      } else if (is.null(input$dt_boxplot_panel_rows_selected)) {
-        p("Select feature to plot")
-      } else {
-        lapply(1:length(input$dt_boxplot_panel_rows_selected), function(i) {
-          fluidRow(column(12, plotOutput(paste0("boxplotoutput", i), height = 280, width = "100%")))
-        })
-      }
-    )
-  })
-  
-  observe({
-    if (length(input$dt_drift_panel_rows_selected) == 0 && rv$drift_plot_select == 1) {
-      output$driftplotoutput1 <- renderPlot({
-        NULL
-      })
-      output$driftplotoutput21 <- renderPlot({
-        NULL
-      })
-    } else if (rv$drift_plot_select == 1) {
-      for (i in 1:(length(input$dt_drift_panel_rows_selected) + 1)) {
-        output[[paste0("driftplotoutput", i)]] <- renderPlot({
-          NULL
-        })
-        output[[paste0("driftplotoutput2", i)]] <- renderPlot({
-          NULL
-        })
-      }
-      for (i in 1:length(input$dt_drift_panel_rows_selected)) {
-        local({
-          my_i <- i
-          output[[paste0("driftplotoutput", my_i)]] <- renderPlot({
-            driftplot(
-              data = rv$data[[rv$activeFile]][input$dt_drift_panel_rows_selected[my_i], ],
-              seq = rv$sequence[[rv$activeFile]]
-            )
-          })
-        })
-        if (input$drift_select != "None") {
-          local({
-            my_i <- i
-            output[[paste0("driftplotoutput2", my_i)]] <- renderPlot({
-              driftplot(
-                data = rv$data[[which(rv$choices %in% input$drift_select)]][input$dt_drift_panel_rows_selected[my_i], ],
-                seq = rv$sequence[[rv$activeFile]]
-              )
-            })
-          })
-        }
-      }
-    } else if (rv$drift_plot_select == 2) {
-      output$cvscatterplot <- renderPlot({
-        cvscatterplot(
-          data = rv$data[[rv$activeFile]],
-          data2 = rv$data[[which(rv$choices %in% input$drift_select)]],
-          seq = rv$sequence[[rv$activeFile]],
-          name1 = names(rv$data)[rv$activeFile],
-          name2 = names(rv$data)[which(rv$choices %in% input$drift_select)]
-        )
-      })
-    }
-  })
-  
-  observe({
-    if (length(input$dt_boxplot_panel_rows_selected > 0)) {
-      for (i in 1:length(input$dt_boxplot_panel_rows_selected)) {
-        local({
-          my_i <- i
-          output[[paste0("boxplotoutput", my_i)]] <- renderPlot({
-            myboxplot(
-              data = rv$data[[rv$activeFile]][input$dt_boxplot_panel_rows_selected[my_i], ],
-              seq = rv$sequence[[rv$activeFile]],
-              log = input$bloxplot_log,
-              ylog = input$bloxplot_ylog
-            )
-          })
-        })
-      }
-    }
-  })
-  
-  observe({ 
-    if (!is.null(rv$activeFile)) {
-      seq <- rv$sequence[[rv$activeFile]]
-      dat <- rv$data[[rv$activeFile]]
-      blank_mv <- sum(is.na(dat[seq[, 1] %in% "Blank"])) +
-        sum(dat[seq[, 1] %in% "Blank"] == 0, na.rm = TRUE)
-      qc_mv <- sum(is.na(dat[seq[, 1] %in% "QC"])) +
-        sum(dat[seq[, 1] %in% "QC"] == 0, na.rm = TRUE)
-      sample_mv <- sum(is.na(dat[seq[, 1] %in% "Sample"])) +
-        sum(dat[seq[, 1] %in% "Sample"] == 0, na.rm = TRUE)
-      
-      sdata <- dat[seq[, 1] %in% "Sample"]
-      sclass <- seq[seq[, 1] %in% "Sample", ][, 4]
-      
-      if (sum(seq$labels %in% "QC") > 0) {
-        qccv <- paste0("CV in QC samples: ",
-                       round(cvmean(dat[seq[, 1] %in% "QC"]), 2), "</br>")
-      } else {
-        qccv <- "No QC in dataset </br>"
-      }
-      
-      if (sum(!is.na(sclass)) > 0) {
-        classcv <- sapply(sort(unique(sclass)), function(x) {
-          round(cvmean(sdata[sclass %in% x]), 2)
-        })
-        classcv <- sapply(seq_along(classcv), function(x) {
-          paste0("CV in class ", x, ": ", classcv[x], "</br>")
-        })
-      } else {
-        classcv <- NULL
-      }
-      text <- c(qccv, classcv)
-      output$title <- renderText({
-        HTML("<h3>", names(rv$data)[rv$activeFile], "</h3>")
-      })
-      output$info_ui <- renderUI({
-        HTML(nrow(dat) - 1, " features.<br>", ncol(dat[seq[, 1] %in% "Sample"]), " samples.<br>", ncol(dat[seq[, 1] %in% "QC"]), " QC samples.<br>", ncol(dat[seq[, 1] %in% "Blank"]), " Blank samples.<br>", "<br>", sample_mv, " missing values in Samples<br>", qc_mv, " missing values in QC samples<br>", blank_mv, " missing values in Blank samples<br><br>")
-      })
-      output$cvinfo_ui <- renderUI({
-        HTML(text)
-      })
-    }
-  })
-  
-  observeEvent(input$normalize, {
-    if (is.null(rv$activeFile)) {
-      showNotification("No data", type = "error")
-    } else if(input$normMethod == "QC (PQN)" & sum(rv$sequence[[rv$activeFile]][, 1] %in% "QC") == 0) {
-      sendSweetAlert(session = session, title = "Error", text = "No QC samples in dataset.", type = "error")
-    } else if(input$normMethod == "Sample amount" & sum(complete.cases(rv$sequence[[rv$activeFile]][, 'amount'])) == 0) {
-      sendSweetAlert(session = session, title = "Error", text = "No sample amount information in dataset.", type = "error")
-    } else {
-      data <- rv$data[[rv$activeFile]]
-      sequence <- rv$sequence[[rv$activeFile]]
-      qualityControls <- data[, sequence[, 1] %in% "QC"] 
-      normalizedData <- normalization(data, sequence, qualityControls, input$normMethod)
-      data[, sequence[, 1] %in% c("QC", "Sample")] <- normalizedData
-      normalizedQCs <- data[, sequence[, 1] %in% "QC"]
-      rv$tmpData <- data
-      rv$tmpSequence <- sequence
-      updateSelectInput(session, "selectpca1", selected = "Unsaved data", 
-                        choices = c("Unsaved data", rv$choices))
-      output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = 
-                                          list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
-      sendSweetAlert(title = "Success", text = paste0("Data normalized using ", input$normMethod), type = "success")
-      # Plot variance in QC samples before and after normalization
-      # output$beforeNormalization <- renderPlot({
-      #   boxplot(log2(qualityControls), main = "Before Normalization", xlab = "Metabolite", ylab = "Intensity")
-      # })
-      # output$afterNormalization <- renderPlot({
-      #   boxplot(log2(normalizedQCs), main = "After Normalization", xlab = "Metabolite", ylab = "Intensity")
-      # })
-      
-      # showModal(
-      #   modalDialog(
-      #     title = "Assess data quality", size = "m",
-      #     fluidRow(
-      #         column(6, plotOutput("beforeNormalization", height = 280, width = "100%")),
-      #         column(6, plotOutput("afterNormalization", height = 280, width = "100%"))
-      #     ),
-      #     footer = list(actionButton("saveNormalization", "Save changes"), modalButton("Dismiss"))
-      #   )
-      # )
-    }
-  })
-  
-  observeEvent(input$saveNormalization, {
-    if(is.null(rv$tmpData)) {
-      showNotification("Normalize first", type = "error")
-    } else {
-      if (input$newFileNorm) {
-        rv$data[[length(rv$data) + 1]] <- rv$tmpData
-        rv$sequence[[length(rv$sequence) + 1]] <- rv$tmpSequence
-        names(rv$data)[length(rv$data)] <- paste0(names(rv$data)[rv$activeFile], "_normalized")
-        initializeVariables()
-      } else {
-        rv$data[[rv$activeFile]] <- rv$tmpData
-        rv$sequence[[rv$activeFile]] <- rv$tmpSequence
-        names(rv$data)[rv$activeFile] <- paste0(names(rv$data)[rv$activeFile], "_normalized")
-      }
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
-      rv$info[length(rv$data)] <- paste(ifelse(is.na(rv$info[rv$activeFile]), "", rv$info[rv$activeFile]), "Normalized with", input$normMethod, " method\n")
-      rv$tmpData <- NULL
-      rv$tmpSequence <- NULL   
-    }
-  })
-  
-  observeEvent(input$transform, {
-    if (is.null(rv$activeFile)) {
-      showNotification("No data", type = "error")
-    } else if(input$logTransform == "None" & input$scaling == "None") {
-      sendSweetAlert(session = session, title = "Warning", text = "No method selected.", type = "warning")
-    } else {
-      data <- rv$data[[rv$activeFile]]
-      sequence <- rv$sequence[[rv$activeFile]]
-      transformed <- transformation(data, sequence, input$logTransform, input$scaling)
-      data[, sequence[, 1] %in% c("QC", "Sample")] <- transformed
-      rv$tmpData <- data
-      output$dttable <- renderDataTable(rv$tmpData, rownames = FALSE, options = list(scrollX = TRUE, scrollY = "700px", pageLength = 20))
-      sendSweetAlert(session, title = "Success", text = "Data transformed.", type = "success")
-    }
-  })
-  
-  observeEvent(input$saveTransform, {
-    if(is.null(rv$tmpData)) {
-      showNotification("Transform first", type = "error")
-    } else {
-      rv$data[[length(rv$data) + 1]] <- rv$tmpData
-      rv$sequence[[length(rv$sequence) + 1]] <- rv$sequence[[rv$activeFile]]
-      names(rv$data)[length(rv$data)] <- paste0(names(rv$data)[rv$activeFile], "_transformed")
-      initializeVariables()
-      rv$choices <- paste(1:length(rv$data), ": ", names(rv$data))
-      rv$tmpData <- NULL
-      rv$tmpSequence <- NULL
-    }
-  })
-  
-  # Statistics
-  observeEvent(input$testType, { #TODO move this to functions file? 
-    sequence <- rv$sequence[[rv$activeFile]]
-    enable("selectTest")
-    switch(input$testType,
-           GroupsUnpaired = {
-             if(!any(complete.cases(sequence[, 4]))) {
-               sendSweetAlert(session, "Oops!", "Invalid test. Provide information on different groups/conditions.", type = "error")
-               disable("selectTest")
-             }
-           },
-           GroupsMultipleTime = {
-             if(any(complete.cases(sequence[, 5])) & any(complete.cases(sequence[, 6]))) {
-               sequence <- sequence[sequence[, 1] %in% "Sample" & complete.cases(sequence[, 4]), ]
-               group_time <- getGroupTime(sequence)
-               unique_values <- unique(group_time)
-               combinations <- combn(unique_values, 2)
-               valid_combinations <- combinations[, apply(combinations, 2, function(cols) is_valid_combination(cols[1], cols[2]))]
-               contrasts <- generate_contrasts(matrix(valid_combinations)) # matrix bc if it's only 1 combination, valid_combinations is not a matrix and generate_contrasts fails
-               
-               updateCheckboxGroupInput(session, "contrasts", choices = contrasts, selected = NULL)
-             } else {
-               sendSweetAlert(session, "Oops!", "Invalid test. No paired samples or time points in dataset.", type = "error")
-               disable("selectTest")
-             }
-           },
-           CompareToReference = {
-             if(!any(complete.cases(sequence[, 4]))) { # or if only one group
-               sendSweetAlert(session, "Oops!", "Invalid test. Provide information on different groups/conditions.", type = "error")
-               disable("selectTest")
-             } else {
-               updateSelectInput(session, "referenceGroup", label = NULL, choices = na.omit(sequence[, 'class']))
-             }
-           },
-           {
-             print('default')
-           }
-    )
-  }, ignoreInit = TRUE
-  )
-  
-  observeEvent(input$selectTest, { #TODO move this to functions file?
-    data <- rv$data[[rv$activeFile]]
-    sequence <- rv$sequence[[rv$activeFile]]
-    switch(input$testType, 
-           GroupsUnpaired = {
-             if(input$group1 == input$group2) {
-               sendSweetAlert(session, "Oops!", "Choose different groups to compare.", type="error")
-             } else {
-               results <- groupComparison(data, sequence, c(input$group1, input$group2))
-               st$results[[rv$activeFile]][[length(st$results[[rv$activeFile]])+1]] <- results
-               names(st$results[[rv$activeFile]])[length(st$results[[rv$activeFile]])] <- paste0(input$group1, "_vs_", input$group2)
-             }
-           },
-           GroupsMultipleTime = { # multi-level in limma 
-             data <- data[sequence[, 1] %in% c("Name", "Sample")]
-             sequence <- sequence[sequence[, 1] %in% c("Sample"), ]
-             
-             group_time <- getGroupTime(sequence)
-             group_time <- factor(group_time, exclude = NA)
-             paired <- factor(sequence[, 'paired'],  exclude = NA)
-             results <- pairedAnalysis(data, group_time, input$contrasts, paired)
-             
-             st$results[[rv$activeFile]] <- results
-           },
-           CompareToReference = {
-             data <- data[sequence[, 1] %in% c("Name", "Sample")]
-             groups <- sequence[complete.cases(sequence[, 4]), 4]
-             results <- referenceGroupComparison(data, as.numeric(input$referenceGroup), groups)
-             st$results[[rv$activeFile]][[length(st$results[[rv$activeFile]])+1]] <- results
-           },
-           {
-             print('default')
-           }
-    )
-    # Render one table for each contrast
-    output$results_ui <- renderUI({
-      lapply(seq_along(st$results[[rv$activeFile]]), function(i) {
-        fluidRow(
-          column(12, strong(names(st$results[[rv$activeFile]])[i])),
-          column(12, box(width = NULL, DTOutput(paste0("results", i))))
-        )
-      })
-    })
-    lapply(seq_along(st$results[[rv$activeFile]]), function(i) {
-      output[[paste0("results", i)]] <- renderDT({
-        st$results[[rv$activeFile]][[i]]
-      })
-    })
-    #enable("runTest")
-  })
-  
-  observeEvent(input$send_polystest, {
-    # Select Name and Samples (no QCs)
-    sequence <- rv$sequence[[rv$activeFile]]
-    tdata <- rv$data[[rv$activeFile]][, sequence[, 1] %in% c("Name",  "Sample")]
-    tseq <- sequence[sequence[, 1] %in% c("Name",  "Sample"), ]
-    groups <- factor(tseq[, 4], exclude = NA)
-    NumReps <- max(table(groups))
-    NumCond <- length(levels(groups))
-    groups <- levels(groups)
-    
-    tdata <- addEmptyCols(tdata, tseq, groups, NumReps)
-    PolySTestMessage <- toJSON(list(
-      numrep=NumReps, numcond=NumCond, grouped=F,
-      firstquantcol=2, expr_matrix=as.list(as.data.frame(tdata))
-    ))
-    js$send_message(url="http://computproteomics.bmb.sdu.dk:443/app_direct/PolySTest/", 
-                    dat=PolySTestMessage, tool="PolySTest")
-  })
-  
-  observeEvent(input$send_vsclust, {
-    sequence <- rv$sequence[[rv$activeFile]]
-    tdata <- rv$data[[rv$activeFile]][, sequence[, 1] %in% c("Name",  "Sample")]
-    tseq <- sequence[sequence[, 1] %in% c("Name",  "Sample"), ]
-    groups <- factor(tseq[, 4], exclude = NA)
-    NumReps <- max(table(groups))
-    NumCond <- length(levels(groups))
-    groups <- levels(groups)
-    
-    tdata <- addEmptyCols(tdata, tseq, groups, NumReps)
-    
-    VSClustMessage <- toJSON(list(
-      numrep=NumReps, numcond=NumCond, grouped=F, 
-      modsandprots=F, expr_matrix=as.list(as.data.frame(tdata))
-    ))
-    js$send_message(url="http://computproteomics.bmb.sdu.dk/app_direct/VSClust/",
-                    dat=VSClustMessage, tool="VSClust")
-  })
-  
-  
-  #
-  
-  data_processed <- eventReactive(input$process, {
-    req(input$dataFile)  # Ensure a file is uploaded
-    
-    # Read the data from the uploaded file
-    Data_in <- read.csv(input$dataFile$datapath, stringsAsFactors = FALSE)
-    # Set the number of eqQCs, MSMSs, and QCs you need
-    num_eqQCs <- input$num_eqQCs # Adjust the number of eqQC rows as needed
-    num_MSMSs <- input$num_MSMSs # Adjust the number of MSMS rows as needed
-    num_QCs <- input$num_QCs # Adjust the number of QC rows as needed
-    insert_after_samples <- input$insert_after_samples # Change this number as needed
-    
-    
-    
-    
-    # Split the data into subsets: blanks, QCs, and the rest
-    blanks <- Data_in[tolower(Data_in$Sample.type) == "blank", ]
-    qcs <- Data_in[tolower(Data_in$Sample.type) == "qc", ]
-    samples <- Data_in[tolower(Data_in$Sample.type) == "sample", ]
-    non_samples <- Data_in[!(Data_in$Sample.type %in% c("Blank", "QC", "Sample")), ]
-    existing_qcs <- Data_in[tolower(Data_in$Sample.type) == "qc", ]
-    
-    # Name to the   # Generate new eqQC names... 
-    sample_type_eqQC_names <- paste0(existing_qcs$name, "_eq_QC")
-    sample_type_MSMS_names <- paste0(existing_qcs$name, "_MSMS")
-    new_QC_names <- paste0(existing_qcs$name, "_QC")
-    new_QC_samples_names <- paste0(existing_qcs$name, "_QC")
-    
-    new_eqQCs <- qcs[rep(1, num_eqQCs), ]
-    
-    
-    # Check if there are existing QCs to duplicate
-    if(nrow(qcs) > 0) {
-      # Create new eqQC rows by replicating the existing ones
-      new_eqQCs <- qcs[rep(1, num_eqQCs), ]
-      
-      # Generate new eqQC names
-      new_eqQC_names <- paste(sample_type_eqQC_names, sprintf("%02d", seq_len(num_eqQCs)), sep="")
-      new_eqQCs$name <- new_eqQC_names
-      
-      # Create new MSMS rows by replicating the existing QCs
-      new_MSMSs <- qcs[rep(1, num_MSMSs), ]
-      
-      # Generate new MSMS names
-      new_MSMS_names <- paste(sample_type_MSMS_names, sprintf("%02d", seq_len(num_MSMSs)), sep="")
-      new_MSMSs$name <- new_MSMS_names
-      
-      # Create new QC rows
-      new_QCs <- qcs[rep(1, num_QCs), ]
-      
-      # Generate new QC names
-      new_QC_names <- paste(new_QC_names, sprintf("%02d", seq_len(num_QCs)), sep="")
-      new_QCs$name <- new_QC_names
-      
-      # Combine the new eqQCs, MSMSs, and QCs with the blanks
-      qcs_combined <- rbind(new_eqQCs, new_MSMSs, new_QCs)
-      
-    } else {
-      stop("No QC samples available to duplicate.")
-    }
-    
-    
-    # Randomize the sample rows (true randomization)
-    samples_randomized <- samples[sample(nrow(samples)), ]
-    
-    # Initialize an empty data frame for the samples with interspersed QCs
-    samples_with_qcs <- data.frame(Position = character(0),
-                                   name = character(0),
-                                   Sample.type = character(0),
-                                   stringsAsFactors = FALSE)
-    
-    # Start numbering new QC entries from num_QCs + 1
-    qc_counter <- num_QCs + 1
-    
-    # Add the samples and intersperse new QCs
-    for (i in 1:nrow(samples_randomized)) {
-      # Add a sample row
-      samples_with_qcs <- rbind(samples_with_qcs, samples_randomized[i, ])
-      
-      # After every insert_after_samples, insert a new QC row
-      if (i %% insert_after_samples == 0) {
-        new_qc_row <- data.frame(Position = qcs$Position,
-                                 name = paste(new_QC_samples_names, sprintf("%02d", qc_counter)),
-                                 Sample.type = "QC",
-                                 stringsAsFactors = FALSE)
-        samples_with_qcs <- rbind(samples_with_qcs, new_qc_row)
-        qc_counter <- qc_counter + 1
-      }
-    }
-    
-    Data_out <- rbind(blanks, qcs_combined, samples_with_qcs, new_qc_row)
-    
-  })
-  
-  output$table <- renderDT({
-    req(data_processed())  # Ensure data has been processed
-    data_processed()
-  }, options = list(pageLength = 50))
-  
-  
-  
-  
-  # Handle file download
-  output$downloadData <- downloadHandler(
-    filename = function() {
-      paste("data-output-", Sys.Date(), ".csv", sep = "")
-    },
-    content = function(file) {
-      req(data_processed())  # Ensure data has been processed
-      write.csv(data_processed(), file, row.names = FALSE)
-    }
-  )
   
   
   

@@ -1,57 +1,19 @@
-library(shiny)
-library(shinydashboard)
-library(shinyBS)
-library(shinyjs)
-#library(shinyalert)
-library(shinyWidgets)
-library(spsComps)
-library(DT)
-library(dplyr)
-library(plotly)
-library(ggplot2)
-library(ggrepel)
-library(gridExtra)
-library(impute)
-library(randomForest)
-library(writexl)
-library(igraph)
-library(stringi)
-library(BiocManager)
-library(shinycssloaders)
-library(jsonlite)
-library(reshape2)
-library("lipidomeR") # new
-library(ggh4x) # new
-
-
-options(repos = BiocManager::repositories())
-source("functions.R")
-source("plotfunctions.R")
-source("analysis_functions.R")
-source("normalization.R")
-
 shinyUI(dashboardPage(
   dashboardHeader(
-    title = tags$div(
-      tags$img(  src = "/Users/jakobhartvig/Desktop/uni/7_semester/ISA_kandidat/September/MetaboLink_test_of_test_server/logo.png",
-                 style = "height: auto; width: auto; max-height: 30px; max-width: 53px; vertical-align: middle; margin-right: 10px;"
-      ), # Adjust path and styling
-      "MetaboLink TEST SERVER"
-    ),
+    title = "MetaboLink",
     titleWidth = 400,
     dropdownMenu(type = "notifications",
                  icon = icon("question-circle"),
                  badgeStatus = NULL,
                  headerText = "Help",
                  notificationItem("User manual", icon = icon("book"),
-                                  href = "https://github.com/anitamnd/jlspec_2_0/wiki"),
+                                  href = "https://github.com/anitamnd/MetaboLink/wiki"),
                  notificationItem("Source code and installation", icon = icon("file"),
-                                  href = "https://github.com/anitamnd/jlspec_2_0"),
+                                  href = "https://github.com/anitamnd/MetaboLink"),
                  notificationItem("Institution", icon = icon("university"),
                                   href = "https://www.sdu.dk/en")
     )
   ),
-  
   
   # Sidebar 
   
@@ -59,6 +21,11 @@ shinyUI(dashboardPage(
     width = "400",
     useShinyjs(),
     tags$style(HTML(".panel-primary {color: #000000;}")),
+    tags$style(HTML("#removeIS {
+        color: black;
+        text-decoration: underline;
+      }")),
+    tags$style(".skin-blue .sidebar .norm a { color: #444; }"),
     tags$head(tags$script(src="CallShiny.js")),
     extendShinyjs(script="CallShiny.js", functions=c("retrieve_results","send_message","run_button")),
     fluidPage(
@@ -66,7 +33,8 @@ shinyUI(dashboardPage(
         selectizeInput("selectDataset", "Active dataset",
                        choices = NULL, width = "100%",
                        options = list(placeholder = "Please upload a file to start")
-        )
+        ) %>% 
+          bsTooltip("Switch between the different uploaded/saved datsets.", placement = "bottom", trigger = "hover")
       ),
       bsCollapse(
         id = "menu", multiple = FALSE, open = "Data input",
@@ -88,9 +56,12 @@ shinyUI(dashboardPage(
                         fluidRow(
                           style = "margin-right: 0px;",
                           column(6, style = "padding-left:0px;",
-                                 bsButton("submit", "Submit", width = "100%")),
+                                 bsButton("upload", "Upload", width = "100%")
+                          ),
                           column(6, style = "padding-left:0px;",
-                                 bsButton("example", "Load example", width = "100%"))
+                                 bsButton("example", "Load example", width = "100%")  %>% 
+                                   bsTooltip("Load example metabolomics datasets in positive and negative ion mode and respective metadata files. More examples available on GitHub.", placement = "bottom", trigger = "hover")
+                          )
                         )
         ),
         bsCollapsePanel("Blank filtration",
@@ -98,7 +69,7 @@ shinyUI(dashboardPage(
                         fluidRow(
                           style = "padding: 0px;",
                           column(12,
-                                 sliderInput("signalStrength", "Signal strength above blank", 0, 10, 5, step = 0.1, width = "100%"),
+                                 sliderInput("signalStrength", "Signal strength above blank", 1, 10, 5, step = 0.1, width = "100%"),
                                  style = "padding: 0px"
                           )
                         ),
@@ -126,7 +97,8 @@ shinyUI(dashboardPage(
                                  style = "padding-left:0px; margin-top: 10px;"
                           )
                         )
-        ),
+        )  %>% 
+          bsTooltip("Requires columns labeled 'Blank' and 'QC'.", placement = "bottom", trigger = "hover"),
         bsCollapsePanel("Missing value filtration",
                         style = "primary",
                         fluidRow(
@@ -157,7 +129,7 @@ shinyUI(dashboardPage(
                         fluidRow(hidden(div(id = "imp_minx_hide", sliderInput("imputationMinX", "Divide min by", min = 1, max = 10, value = 1, step = 1, width = "100%")))),
                         fluidRow(
                           style = "margin-right: 0px;",
-                          column(6, prettyCheckbox("imp_onlyQC", "Only imputate QC")),
+                          column(6, prettyCheckbox("imp_onlyQC", "Only impute QC", value = TRUE)),
                           column(6)
                         ),
                         fluidRow(
@@ -172,55 +144,76 @@ shinyUI(dashboardPage(
                           column(6, bsButton("saveImputation", "Save", width = "100%"), style = "padding-left:0px;")
                         )
         ),
-        bsCollapsePanel("IS normalization",
-                        style = "primary",
-                        fluidRow(
-                          selectInput("isMethod", "Method", choices = c("Nearest RT", "Same lipid structure"), selected = "Nearest RT", width = "100%")
-                        ),
-                        fluidRow(
-                          checkboxGroupInput("isChoose", NULL, choices = NULL, selected = NULL, inline = FALSE)
-                        ),
-                        fluidRow(
-                          style = "margin-right: 0px;",
-                          column(6, checkboxInput("normalizeQC", "Normalize QC", value = T, width = "100%"), style = "padding: 0px; margin-top: 0px; margin-left: 10px; margin-right: -10px;"),
-                          column(6, checkboxInput("newFileIS", "Save as new file", value = T, width = "100%"), style = "padding: 0px; margin-top: 0px; margin-left: 10px; margin-right: -10px;")
-                        ),
-                        fluidRow(
-                          style = "margin-right: 0px;",
-                          column(6, bsButton("normalizeIS", "Normalize", width = "100%"), style = "padding-left:0px;"),
-                          column(6, bsButton("optimizeIS", "Optimize", width = "100%"), style = "padding-left:0px;")
-                        ),
-                        fluidRow(
-                          style = "margin-right: 0px;",
-                          column(6, bsButton("removeIS", "Remove IS", width = "100%"), style = "padding-left:0px;"),
-                          column(6, bsButton("saveIS", "Save", width = "100%"), style = "padding-left:0px;")
-                        )
-        ),
-        bsCollapsePanel("Drift correction",
-                        style = "primary",
-                        fluidRow(selectInput("driftMethod", "Signal correction method", choices = c("QC-RFSC (random forrest)", "QC-RLSC (robust LOESS)"), width = "100%")),
-                        fluidRow(div(id = "dc_ntree_hide", sliderInput("driftTrees", "ntree", min = 100, max = 1000, value = 500, step = 100, width = "100%"))),
-                        fluidRow(hidden(div(id = "dc_qcspan_hide", sliderInput("driftQCspan", "QCspan", min = 0.2, max = 0.75, value = 0.7, step = 0.05, width = "100%")))),
-                        fluidRow(hidden(div(id = "dc_degree_hide", sliderInput("driftDegree", "degree", min = 0, max = 2, value = 2, step = 1, width = "100%")))),
-                        fluidRow(
-                          style = "margin-right: 0px;",
-                          column(12, checkboxInput("newFileDrift", "Save as new file", value = T, width = "100%"), style = "padding: 0px; margin-top: -10px; margin-left: 10px; margin-right: -10px;"),
-                          column(6, bsButton("runDrift", "Run", width = "100%"), style = "padding-left:0px;"),
-                          column(6, bsButton("saveDrift", "Save", width = "100%"), style = "padding-left:0px;")
-                        )
-        ) %>% bsTooltip("For correct usage, please refer to the user manual.", placement = "bottom", trigger = "hover"),
         bsCollapsePanel("Normalization",
                         style = "primary",
-                        fluidRow(
-                          style = "margin-right: 0px;",
-                          column(12, selectInput("normMethod", "Function", choices = c("QC (PQN)", "Sum", "Median", "Sample amount"), width = "100%"), style = "padding-left:0px;")
-                        ),
-                        fluidRow(
-                          style = "margin-right: 0px;",
-                          column(12, checkboxInput("newFileNorm", "Save as new file", value = F, width = "100%"), style = "padding: 0px; margin-top: -10px; margin-left: 10px; margin-right: -10px;"),
-                          column(6, bsButton("normalize", "Run", width = "100%"), style = "padding-left:0px;"),
-                          column(6, bsButton("saveNormalization", "Save", width = "100%"), style = "padding-left:0px;")
-                        )
+                        p("Expand options below to see all the normalization methods."),
+                        div(class = "norm",
+                            bsCollapse(
+                              id =  "norm2", multiple = FALSE, open = "Normalization",
+                              bsCollapsePanel("Internal standards",
+                                              fluidRow(
+                                                selectInput("isMethod", "Method", choices = c("Nearest RT", "Same lipid structure"), selected = "Nearest RT", width = "100%")
+                                              ),
+                                              fluidRow(
+                                                checkboxGroupInput("isChoose", NULL, choices = NULL, selected = NULL, inline = FALSE)
+                                              ),
+                                              fluidRow(
+                                                style = "margin-right: 0px;",
+                                                column(12, actionLink("removeIS", "Remove IS", width = "50%") %>% 
+                                                         bsTooltip("Remove internal standards.", placement = "bottom", trigger = "hover")
+                                                )),
+                                              fluidRow(
+                                                style = "margin-right: 0px;",
+                                                column(6, checkboxInput("normalizeQC", "Normalize QC", value = T, width = "100%"), style = "padding: 0px; margin-top: 0px; margin-left: 10px; margin-right: -10px;"),
+                                                column(6, checkboxInput("newFileIS", "Save as new file", value = T, width = "100%"), style = "padding: 0px; margin-top: 0px; margin-left: 10px; margin-right: -10px;")
+                                              ),
+                                              fluidRow(
+                                                style = "margin-right: 0px;",
+                                                column(6, bsButton("normalizeIS", "Normalize", width = "100%"), style = "padding-left:0px;"),
+                                                column(6, bsButton("saveIS", "Save", width = "100%"), style = "padding-left:0px;")
+                                              )
+                              ),
+                              bsCollapsePanel("Drift correction",
+                                              fluidRow(
+                                                selectInput("driftMethod", "Signal correction method", choices = c("QC-RFSC (random forest)", "QC-RLSC (robust LOESS)"), width = "100%")
+                                              ),
+                                              fluidRow(
+                                                conditionalPanel(
+                                                  condition = "input.driftMethod == 'QC-RFSC (random forest)'",
+                                                  div(id = "dc_ntree_hide", 
+                                                      sliderInput("driftTrees", "ntree", min = 100, max = 1000, value = 500, step = 100, width = "100%")
+                                                  )
+                                                ),
+                                                conditionalPanel(
+                                                  condition = "input.driftMethod == 'QC-RLSC (robust LOESS)'",
+                                                  div(id = "dc_qcspan_hide", 
+                                                      sliderInput("driftQCspan", "QCspan", min = 0.2, max = 0.75, value = 0.5, step = 0.05, width = "100%")
+                                                  ),
+                                                  div(id = "dc_degree_hide", 
+                                                      sliderInput("driftDegree", "degree", min = 0, max = 2, value = 2, step = 1, width = "100%")
+                                                  )
+                                                )
+                                              ),
+                                              fluidRow(style = "margin-right: 0px;",
+                                                       column(12, checkboxInput("newFileDrift", "Save as new file", value = T, width = "100%"), style = "padding: 0px; margin-top: -10px; margin-left: 10px; margin-right: -10px;"),
+                                                       column(6, bsButton("runDrift", "Run", width = "100%"), style = "padding-left:0px;"),
+                                                       column(6, bsButton("saveDrift", "Save", width = "100%"), style = "padding-left:0px;")
+                                              )
+                              ),
+                              bsCollapsePanel("More",
+                                              fluidRow(
+                                                style = "margin-right: 0px;",
+                                                column(12, selectInput("normMethod", "Select normalization method", choices = c("QC (PQN)", "Sum", "Median", "Sample amount"), width = "100%"), style = "padding-left:0px;")
+                                              ),
+                                              fluidRow(
+                                                style = "margin-right: 0px;",
+                                                column(12, checkboxInput("newFileNorm", "Save as new file", value = F, width = "100%"), style = "padding: 0px; margin-top: -10px; margin-left: 10px; margin-right: -10px;"),
+                                                column(6, bsButton("normalize", "Run", width = "100%"), style = "padding-left:0px;"),
+                                                column(6, bsButton("saveNormalization", "Save", width = "100%"), style = "padding-left:0px;")
+                                              )
+                              ) %>% 
+                                bsTooltip("Press for more normalization options.", placement = "bottom", trigger = "hover")
+                            ))
         ),
         bsCollapsePanel("Log transform and scaling",
                         style = "primary",
@@ -232,6 +225,10 @@ shinyUI(dashboardPage(
                           ),
                           column(6, selectInput("scaling", "Data scaling", choices = c("None", "Mean center", "Auto scale"), width = "100%"), style = "padding-left:0px;")
                         ),
+                        fluidRow(
+                          column(6,
+                                 checkboxInput("newFileTransform", "Save as new file", value = T, width = "100%")
+                          )),
                         fluidRow(
                           style = "margin-right: 0px;",
                           column(6, bsButton("transform", "Run", width = "100%"), style = "padding-left:0px;"),
@@ -248,7 +245,7 @@ shinyUI(dashboardPage(
                         ),
                         fluidRow(
                           style = "margin-right: 0px;",
-                          column(6, bsButton("mergeRankings", "Edit priorities", width = "100%"), style = "padding-left:0px;"),
+                          column(6, bsButton("editRankings", "Edit priorities", width = "100%"), style = "padding-left:0px;"),
                           column(6, bsButton("mergeDatasets", "Run", width = "100%"), style = "padding-left:0px;")
                         )
         ) %>% bsTooltip("Merge datasets with same samples and different ion mode. The datasets must have the same number of samples.", placement = "bottom", trigger = "hover"),
@@ -260,6 +257,11 @@ shinyUI(dashboardPage(
                           column(12, bsButton("removeFiles", "Remove", width = "50%"), style = "padding-left:0px;")
                         )
         )
+      ),
+      fluidRow(
+        column(12, div(style = "float: right;",
+                       a(icon("book"), "User manual",  href = "https://github.com/anitamnd/MetaboLink/wiki")
+        ))
       )
     ),
     sidebarMenu()
@@ -286,7 +288,7 @@ shinyUI(dashboardPage(
                          block = T
       )),
       column(3, bsButton("statistics_button",
-                         label = "Data analysis",
+                         label = "Statistics",
                          icon = icon("clipboard"),
                          style = "default",
                          block = T
@@ -303,12 +305,17 @@ shinyUI(dashboardPage(
       hidden(
         div(
           id = "sequence_panel",
-          column(12, box(width = NULL,
-                         strong("User guide"),
-                         p("Make sure the columns are labeled correctly before proceeding."),
-                         p("If you see a sample column labeled '-', this usually means there are invalid characters in the column."),
-                         p("Labels cannot be edited in the app to avoid crashes. Please edit the file and re-upload."))
-          ),
+          column(12, box(width = NULL, title = "Instructions", status = "primary", solidHeader = TRUE,
+                         tagList(
+                           list(
+                             tags$li("Upload the sequence/metadata file."),
+                             tags$li("The sample names in the metafile should match the sample names in the data file."),
+                             tags$li("Make sure the columns are labeled correctly before proceeding."),
+                             tags$li("If a sample (numeric) column is labeled '-', this usually means there are invalid characters in the column."),
+                             tags$li("Labels cannot be edited in the app to avoid crashes. Please edit the file and re-upload.")
+                           )
+                         )
+          )),
           column(
             width = 8,
             box(
@@ -321,20 +328,21 @@ shinyUI(dashboardPage(
             box(
               width = NULL, title = "Upload sequence file", status = "danger",
               fileInput("inputSequence", "Select file", accept = c("txt/csv", "text/comma-seperated-values,text/plain", ".csv"), width = "100%"),
-              column(6, actionButton("updateSequence", label = "Update", width = "100%")), 
-              column(6, actionButton("reuseSequence", label = "Re-use sequence", width = "100%"))
+              column(6, style = "padding-left: 0px;", actionButton("updateSequence", label = "Update", width = "100%")), 
+              column(6, style = "padding-right: 0px;", actionButton("reuseSequence", label = "Re-use sequence", width = "100%"))
             ),
             box(
               width = NULL, title = "Edit data columns",
-              actionButton("editSequence", "Edit", width = 100)
+              actionButton("editColumns", "Edit", width = "50%")
             ),
             box(
               width = NULL, title = "Group nicknames",
-              actionButton("editGroups", "Edit", width = 100)
+              p("Only use letters and numbers."),
+              actionButton("editGroups", "Edit", width = "50%")
             ),
             box(
               width = NULL, title = "Download sequence file",
-              downloadButton("downloadSequence", "Download", width = 100)
+              downloadButton("downloadSequence", " Download")
             )
           )
         )
@@ -350,40 +358,61 @@ shinyUI(dashboardPage(
                        column(12, box(width = NULL, DTOutput("dttable") %>% withSpinner(color="#0A4F8F")))
                      )
             ),
-            tabPanel("Sample distribution", 
+            tabPanel("Sample distribution",
+                     #TODO add specific panel for comparison?
                      fluidRow(
                        column(12,
-                              box(width = NULL, h4("Median across samples"), plotlyOutput("histogram")),
-                       ),
+                              box(width = NULL, title = "Median across samples", 
+                                  plotlyOutput("histogram") %>% withSpinner(color="#0A4F8F")
+                              )),
                        column(12,
-                              box(width = NULL, h4("Median across QCs"), uiOutput("histogram_qc"))
-                       )
+                              box(width = NULL, title = "Median across QCs",
+                                  uiOutput("histogram_qc") %>% withSpinner(color="#0A4F8F")
+                              )),
+                       column(12,
+                              box(width = NULL, title = "Median across groups",
+                                  column(6, selectInput("select_group", "Select group", choices = NULL, width = "100%")),
+                                  column(6),
+                                  plotlyOutput("histogram_group") %>% withSpinner(color="#0A4F8F")
+                              ))
                      )
             ),
             tabPanel("PCA", 
+                     #TODO small guide/tooltips
                      fluidRow(
-                       column(6, box(width = NULL, 
+                       column(12, box(width = NULL, title = "Principal Component Analysis",
+                                      tagList(
+                                        list(
+                                          tags$li("Check log-transfomed checkbox if data is already log-transformed.")
+                                        )
+                                      )
+                       ))
+                     ),
+                     fluidRow(
+                       column(6, box(width = NULL,
                                      selectInput("selectpca1", "", choices = NULL, width = "100%"),
-                                     checkboxInput("pca1_islog", "Is data log-transformed?", value = F, width = "100%"),
-                                     actionButton("run_pca1", "Run PCA", width = "50%"),
-                                     plotlyOutput("plotpca1"), br(),
+                                     checkboxInput("pca1_islog", "Data is log-transformed.", value = FALSE, width = "100%"),
+                                     actionButton("run_pca1", "Run PCA", width = "50%") %>%
+                                       bsTooltip("Check box if the data is log-transformed!", placement = "bottom", trigger = "hover"),
+                                     plotlyOutput("plotpca1", width = "100%"), br(),
                                      htmlOutput("pca1Details")
                        )),
-                       column(6, box(width = NULL, 
+                       column(6, box(width = NULL,
                                      selectInput("selectpca2", "", choices = NULL, width = "100%"),
-                                     checkboxInput("pca2_islog", "Is data log-transformed?", value = F, width = "100%"),
+                                     checkboxInput("pca2_islog", "Data is log-transformed.", value = FALSE, width = "100%"),
                                      actionButton("run_pca2", "Run PCA", width = "50%"),
                                      plotlyOutput("plotpca2"), br(),
                                      htmlOutput("pca2Details")
+                       )),
+                       #TODO boxplots (see normalization)
+                       column(6, box(width = NULL,
+                                     plotOutput("boxplot_1", width = "100%")
+                       )),
+                       column(6, box(width = NULL,
+                                     plotOutput("boxplot_2", width = "100%")
                        ))
                      ),
             ),
-            
-            
-            
-            
-            
-            
             
             
             
@@ -445,38 +474,73 @@ shinyUI(dashboardPage(
                        ),
                        
                        # HEATMAP VISUALIZATION
-                       tabPanel("Lipid Visualization",
-                                
-                                box(
-                                  column(width = 8,
-                                         uiOutput("select_lipid_ui"),
-                                         tags$li("Lipids will show up both on Lipid Heatmap and Bubble plot if they are within the threshold of p-value and logFC."),
-                                         tags$li("Be aware of isoforms of each lipid.")
-                                  )
-                                ),
-                                box(
-                                  column(width = 4, 
-                                         uiOutput("p_value_max_ui"),
-                                         uiOutput("logFC_input_ui")
-                                  ),
-                                  column(width = 4, 
-                                         # Note: `uiOutput("logFC_input_ui")` appears twice; ensure this is intentional.
-                                  )
-                                ),
-                                
-                                div(style = "width: 100%; height: 2000px; overflow-y: scroll;",  # Adjust overflow and height
-                                    uiOutput("heatmap_ui")
-                                ),   
-                                
-                                column(width = 12,
-                                       dataTableOutput("pValueTable")
-                                )
-                                
+    
+                       tabPanel(
+                         "Lipid Visualization",
+                         
+                         # First row with Lipid Selection and Plot Settings side by side
+                         fluidRow(
+                           # Column for Lipid Selection and Plot Settings
+                           column(
+                             width = 6,
+                             box(
+                               width = NULL,
+                               title = "Plot Settings", solidHeader = TRUE,
+                               uiOutput("select_lipid_ui"),
+                               tags$li("Lipids will show up both on Lipid Heatmap and Bubble plot if they are within the threshold of p-value and logFC."),
+                               br(),
+                               br(),
+                               uiOutput("p_value_max_ui"),
+                               uiOutput("logFC_input_ui"),
+                               uiOutput("p_value_adj"),
+                               checkboxInput("split_screen", "Show Heatmap and Table side by side", value = FALSE),
+                               checkboxInput("show_grid", "Display Grid Lines", value = TRUE),
+                               br(),
+                               # Add the action button to open the modal dialog
+                               actionButton("download_heatmap_btn", "Download Heatmap Image")
+                             )
+                           ),
+                           
+                           # Column for Color Settings (no changes)
+                           column(
+                             width = 6,
+                             box(
+                               width = NULL,
+                               title = "Color Settings", solidHeader = TRUE,
+                               colourInput("low_color", "Negative logFC color", value = "#4575b4"),
+                               colourInput("mid_color", "Mid logFC Color", value = "white"),
+                               colourInput("high_color", "Positive logFC color", value = "#d73027"),
+                               colourInput("panel_bg_color", "Panel Background Color", value = "#D3D3D3"),
+                               colourInput("strip_bg_color", "Strip Background Color", value = "#3483d1"),
+                               colourInput("strip_text_color", "Strip Text Color", value = "black")
+                             )
+                           )
+                         ),
+                         
+                         # Output for the visualization
+                         uiOutput("visualization_ui")
                        ),
+                       
+                       
+                       
+                       
+                         
+
+    
+                       
+                       
+                       
+                       tabPanel(
+                         "Table of Heatmap",
+                         column(width = 12,
+                                dataTableOutput("pValueTable")
+                         )
+                       ),
+                       
                        
                        tabPanel(
                          "Bubble plot of data",
-
+                         
                          uiOutput("bubble_plot_ui"),
                          tags$div(
                            class = "alert-warning", # You can change this to 'alert-success', 'alert-warning', etc.
@@ -489,11 +553,10 @@ shinyUI(dashboardPage(
                        
                        
                        
+                       
+                       
                      )
             ),
-            
-            
-            
             
             
             
@@ -518,10 +581,15 @@ shinyUI(dashboardPage(
             ),
             tabPanel("Feature viewer",
                      fluidRow(
-                       column(3, box(width = NULL, DTOutput("dt_boxplot_panel"))),
-                       column(9, box(width = NULL, 
+                       column(3, box(
+                         width = NULL, 
+                         title = "Select feature", 
+                         DTOutput("dt_boxplot_panel")
+                       )),
+                       column(9, box(width = NULL, title = "Settings",
                                      fluidRow(
                                        column(6,
+                                              textInput("boxplot_title", "Title", value = NULL),
                                               radioButtons(
                                                 inputId = "bloxplot_log",
                                                 label = "Log",
@@ -563,53 +631,96 @@ shinyUI(dashboardPage(
           id = "statistics_panel",
           fluidPage(
             fluidRow(
-              box(width=NULL, column(5,
-                                     id = "pr_c3",
-                                     h4("Analysis parameters"), 
-                                     fluidRow(
-                                       column(12, p("Remember to log-transform and scale data before running tests.")),
-                                       column(12, selectInput("testType", "Select test", choices = c("2 group comparison (unpaired)" = "GroupsUnpaired",
-                                                                                                     "2 group comparison with multiple time points (paired)" = "GroupsMultipleTime",
-                                                                                                     "Compare to reference group" = "CompareToReference"), selected = NULL, 
-                                                              width = "100%"))
-                                       # calculate fold change as the ratio between 2 group means?                                            
-                                     ),
-                                     conditionalPanel(
-                                       condition = "input.testType == 'GroupsUnpaired'",
-                                       fluidRow(
-                                         column(6, selectInput("group1", "Group", choices = NULL, width = "100%")),
-                                         column(6, selectInput("time1", "Time", choices = NULL, width = "100%"))
-                                       ),
-                                       fluidRow(
-                                         column(6, selectInput("group2", "Group", choices = NULL, width = "100%")),
-                                         column(6, selectInput("time2", "Time", choices = NULL, width = "100%"))
-                                       )
-                                     ),
-                                     conditionalPanel(
-                                       condition = "input.testType == 'CompareToReference'",
-                                       fluidRow(
-                                         column(12, selectInput("referenceGroup", "Select reference group", choices = NULL, width = "100%"))
-                                       )
-                                     ),
-                                     conditionalPanel(
-                                       condition = "input.testType == 'GroupsMultipleTime'",
-                                       fluidRow(
-                                         column(12, checkboxGroupInput("contrasts", "Select contrasts", choices = NULL, selected = NULL, inline = FALSE))
-                                       )
-                                     ),
-                                     fluidRow(
-                                       column(12, actionButton("selectTest", "Run test", width = "40%", style="float:right; margin-right: 0px;"))
-                                     )    
-              )),
-              column(6,
-                     id = "pr_c2",
-                     h4("User guide"),
-                     p("")
+              column(12, box(width = NULL, title = "Guide", status = "primary", solidHeader = TRUE,
+                             collapsible = TRUE, collapsed = TRUE,
+                             strong("Local test"),
+                             p("Start by selecting the test type:"),
+                             tags$ul(
+                               tags$li("2 groups (unpaired): compare the means of two independent or unrelated groups to determine if there is a statistically significant difference between them."),
+                               tags$li("2 groups (paired): compare the means of two related groups to see if their average difference is significantly different from zero. Used when the same subjects are tested under two different conditions (e.g., before and after a treatment)."),
+                               tags$li("2 groups with time (paired): used to analyze the changes within the same group over different times or conditions, assessing if there is a consistent effect across these points."),
+                               tags$li("Compare to reference group: compare the mean of all groups against a reference group. Can be used to determine if the groups significantly differ from the expected performance or baseline.")
+                             ),
+                             br(),
+                             strong("PolySTest"),
+                             p("Usage of PolySTest is recommended for data with few replicates and high amounts of missing values."),
+                             tagList(
+                               list(
+                                 tags$li("Select groups (required) and time (optional)."),
+                                 tags$li("Options such as 'paired' analysis are available in PolySTest."),
+                                 tags$li("To export the entire dataset to PolySTest, go to the Export panel.")
+                               )
+                             )
+              )
               )
             ),
-            br(),
-            h4("Results"),
-            uiOutput("results_ui")
+            fluidRow(
+              column(6, box(width = NULL,
+                            h4("Local test"),
+                            fluidRow(
+                              column(12,
+                                     selectInput("testType", "Select test", width = "100%",
+                                                 choices = c("2 groups (unpaired)" = "GroupsUnpaired",
+                                                             "2 groups (paired)" = "GroupsPaired",
+                                                             "2 groups with time (unpaired)" = "GroupsTimeUnpaired",
+                                                             "2 groups with time (paired)" = "GroupsMultipleTime",
+                                                             "Compare to reference group" = "CompareToReference"), selected = NULL
+                                     ))
+                            ),
+                            conditionalPanel(
+                              condition = "input.testType == 'GroupsUnpaired' || input.testType == 'GroupsPaired'",
+                              fluidRow(
+                                column(6, selectInput("group1", "Group 1", choices = NULL, width = "100%")),
+                                column(6, selectInput("group2", "Group 2", choices = NULL, width = "100%"))
+                              )
+                            ),
+                            conditionalPanel(
+                              condition = "input.testType == 'GroupsTimeUnpaired'",
+                              fluidRow(
+                                column(6, selectInput("group1_time", "Group", choices = NULL, width = "100%")),
+                                column(6, selectInput("time1_time", "Time", choices = NULL, width = "100%"))
+                              ),
+                              fluidRow(
+                                column(6, selectInput("group2_time", "Group", choices = NULL, width = "100%")),
+                                column(6, selectInput("time2_time", "Time", choices = NULL, width = "100%"))
+                              ),
+                            ),
+                            conditionalPanel(
+                              condition = "input.testType == 'CompareToReference'",
+                              fluidRow(
+                                column(12, selectInput("referenceGroup", "Select reference group", choices = NULL, width = "100%"))
+                              )
+                            ),
+                            conditionalPanel(
+                              condition = "input.testType == 'GroupsMultipleTime'",
+                              fluidRow(
+                                column(12, checkboxGroupInput("contrasts", "Select contrasts", choices = NULL, selected = NULL, inline = FALSE))
+                              )
+                            ),
+                            fluidRow(
+                              column(6, actionButton("selectTest", "Run test", width = "100%"))
+                            )
+              )),
+              column(6, box(width = NULL, 
+                            h4("Export to PolySTest"),
+                            fluidRow(
+                              column(6, selectInput("group1_polystest", "Group", choices = NULL, width = "100%")),
+                              column(6, selectInput("time1_polystest", "Time", choices = NULL, width = "100%"))
+                            ),
+                            fluidRow(
+                              column(6, selectInput("group2_polystest", "Group", choices = NULL, width = "100%")),
+                              column(6, selectInput("time2_polystest", "Time", choices = NULL, width = "100%"))
+                            ),
+                            fluidRow( 
+                              column(6, actionButton("export_polystest", "Send to PolySTest", width = "100%"))
+                            )
+              ))
+            ),
+            fluidRow(
+              column(12, box(title = "Results", width = NULL,
+                             uiOutput("results_ui")
+              ))
+            )
           )
         )
       )
@@ -618,7 +729,7 @@ shinyUI(dashboardPage(
       hidden(
         div(
           id = "export_panel",
-          box(title = strong(".csv and .xlsx"), width = 6,
+          box(title = ".csv and .xlsx", status = "primary", solidHeader = TRUE, width = 6,
               column(12, 
                      h4(".csv"),
                      uiOutput("export_ui")
@@ -637,7 +748,7 @@ shinyUI(dashboardPage(
                      uiOutput("export_settings")
               )
           ),
-          box(title = strong("Export to other apps"), width = 6,
+          box(title = "Export to other apps", status = "primary", solidHeader = TRUE, width = 6,
               column(12, 
                      h4("Statistical testing"),
                      actionButton("send_polystest", "Send to PolySTest"),

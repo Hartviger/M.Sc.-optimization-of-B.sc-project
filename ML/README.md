@@ -1,17 +1,56 @@
-##### METABOLINK TEST SERVER ####
-TEST CREATED BY JAKOB R. HARTVIG
+# MetaboLink
 
-Lipid Heatmap
-This code is a copy of the main MetaboLink code with an added heatmap function. The heatmap function allows for visualization of lipidomics data in a heatmap format.
+MetaboLink is a web-based application created with shiny R and it is available at http://computproteomics.bmb.sdu.dk/Metabolomics/.
+Documentation on how to use the app can be found in [Wiki MetaboLink](https://github.com/anitamnd/MetaboLink/wiki).
 
-To try it out, follow this link:
-MetaboLink Test Server
-https://jakobhartvigapps.shinyapps.io/Metabolink_test_server/
+Example files to be used with the app are included in the folder _example_files_.
 
-Instructions:
+## Implementation on own computer
 
-On the left-hand side, select 'Load example'.
-Ensure 'lipidomics_pos' is the active dataset. Both a metadata file and a sequences file will be uploaded automatically.
-At the top, click 'Explore data'.
-A new tab will appear. Select 'Lipid Heatmap'.
-Click 'Run data processing' and follow the on-screen instructions.
+### Docker
+
+```
+docker pull anitamnd/metabolink
+```
+
+```
+docker run -t -i -p 3838:3838 anitamnd/metabolink
+```
+
+and access the shiny app through http://localhost:3838
+
+
+## Instalation
+
+### Clone repository
+
+```
+git clone https://github.com/anitamnd/MetaboLink
+```
+
+### Install dependencies
+Use the following code to install the required R packages:
+
+```
+install.packages('BiocManager', repos='http://cran.us.r-project.org')
+library(BiocManager)
+BiocManager::install(c('dplyr','plotly','shiny','shinyBS','shinydashboard','shinycssloaders','limma','shinyjs','shinyalert','shinyWidgets','spsComps','ggplot2','ggrepel','gridExtra','impute','randomForest','writexl','stringi','igraph'), ask=F)
+```
+
+You can then run the app from the server.R or ui.R files using RStudio or run the app on a shiny-server.
+
+---
+
+## Contact
+
+For software issues and general questions, please submit an issue.
+
+---
+
+## Publication
+
+If you use MetaboLink, please cite:
+
+Mendes A. et al. (2024) [MetaboLink: A web application for Streamlined Processing and Analysis of Large-Scale Untargeted Metabolomics Data](https://pubmed.ncbi.nlm.nih.gov/39018180/)
+
+DOI: [10.1093/bioinformatics/btae459](https://doi.org/10.1093/bioinformatics/btae459)
