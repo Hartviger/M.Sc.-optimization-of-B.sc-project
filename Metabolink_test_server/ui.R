@@ -1,6 +1,6 @@
 shinyUI(dashboardPage(
   dashboardHeader(
-    title = "MetaboLink",
+    title = "MetaboLink_TEST_SERVER",
     titleWidth = 400,
     dropdownMenu(type = "notifications",
                  icon = icon("question-circle"),

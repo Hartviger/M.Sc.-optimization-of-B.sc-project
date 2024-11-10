@@ -1385,10 +1385,7 @@ shinyServer(function(session, input, output) {
     sequence <- rv$sequence[[rv$activeFile]]
     data <- rv$data[[rv$activeFile]]
     
-    # Removes anything that are not part of the data of the samples and name. 
-    data <- data[, sequence[ , 'labels'] %in% c("Name","Sample")]
-    sequence <- sequence[sequence[ , 'labels'] %in% c("Name","Sample"), ]
-    
+
     # Capture the number of rows before filtering, used to compare with the number of rows after filtering
     number_of_rows_before <- nrow(data)
     
@@ -1417,9 +1414,15 @@ shinyServer(function(session, input, output) {
     # This will make it possible to switch between original data and merged data. OG data: using _1 _2 ... _n. Merged will sum the values of the "duplicated" data. 
     if (input$selected_dataset == "original") {
       data <- unique_compound_names(data)
-    } else if (input$selected_dataset == "merged") {
+    }  else if (input$selected_dataset == "merged") {
+      # Merge duplicates
+      # Removes anything that are not part of the data of the samples and name. 
+      data <- data[, sequence[ , 'labels'] %in% c("Name","Sample")]
+      sequence <- sequence[sequence[ , 'labels'] %in% c("Name","Sample"), ]
+      
       data <- merge_duplicates(data)
     }
+    
     
     
     
@@ -1997,22 +2000,50 @@ shinyServer(function(session, input, output) {
       
       output$pValueTable <- renderDataTable({
         filtered_data <- reactiveFilteredData()
+        req(data)
         
-        dataTableToShow <- filtered_data[, c("Compound_Name", "logFC", "p_value", "padj")]
+        # Ensure 'Compound_Name' exists in 'data'
+        if (!"Compound_Name" %in% colnames(data)) {
+          data$Compound_Name <- data[, 1]  # Assuming the first column contains compound names
+        }
         
-        # Round 'logFC' and 'p_value' to the desired number of decimal places
-        dataTableToShow$logFC <- round(dataTableToShow$logFC, 5)      # 5 decimal places for logFC
-        dataTableToShow$p_value <- round(dataTableToShow$p_value, 5)  # 5 decimal places for p-value
-        dataTableToShow$padj <- round(dataTableToShow$padj, 5)  # 5 decimal places for p-value
+        # Ensure 'Compound_Name' exists in 'filtered_data'
+        if (!"Compound_Name" %in% colnames(filtered_data)) {
+          stop("'Compound_Name' column not found in 'filtered_data'")
+        }
         
+        # Check if 'Original annotation' exists in 'data'
+        if ("Original annotation" %in% colnames(data)) {
+          # Rename 'Original annotation' to 'Original.annotation' in 'data'
+          colnames(data)[colnames(data) == "Original annotation"] <- "Original.annotation"
+          
+          # Merge 'filtered_data' with 'Original.annotation' from 'data' based on 'Compound_Name'
+          merged_data <- merge(
+            filtered_data,
+            data[, c("Compound_Name", "Original.annotation")],
+            by = "Compound_Name",
+            all.x = TRUE
+          )
+          
+          # Create dataTableToShow including 'Original.annotation'
+          dataTableToShow <- merged_data[, c("Compound_Name", "Original.annotation", "logFC", "p_value", "padj")]
+        } else {
+          # 'Original annotation' column not found, proceed without it
+          dataTableToShow <- filtered_data[, c("Compound_Name", "logFC", "p_value", "padj")]
+        }
         
-        # Render the selected data in a DataTable
+        # Round numeric columns
+        dataTableToShow$logFC <- round(dataTableToShow$logFC, 5)
+        dataTableToShow$p_value <- round(dataTableToShow$p_value, 5)
+        dataTableToShow$padj <- round(dataTableToShow$padj, 5)
+        
+        # Render the DataTable
         datatable(dataTableToShow, options = list(pageLength = 10, scrollX = TRUE))
       })
       
-      
       output$pValueTable_2 <- renderDataTable({
         filtered_data <- reactiveFilteredData()
+        
         
         dataTableToShow <- filtered_data[, c("Compound_Name", "logFC", "p_value", "padj")]
         
