@@ -72,7 +72,7 @@ create_grouped_data_frames <- function(sequence, data) {
       if (length(matching_indices) > 0) {
         # Select only the columns for the current group
         group_data <- data[, matching_indices, drop = FALSE]
-
+        
         
         
         # Store the filtered data frame in the list, named by the group
@@ -133,6 +133,74 @@ merge_duplicates <- function(data) {
   return(data_merged)
 }
 
+merged_info_function <- function(data) {
+  # Define possible names for the compound name column
+  possible_name_cols <- c("Name", "Compound.name", "Compound_Name", "CompoundName", "Compound.Name")
+  
+  # Find the compound name column
+  compound_name_col <- intersect(possible_name_cols, names(data))
+  
+  if (length(compound_name_col) == 0) {
+    # No compound name column found, return NULL instead of stopping
+    warning("No compound name column found. Please ensure your data has one of the following column names: ",
+            paste(possible_name_cols, collapse = ", "), ". Returning NULL.")
+    return(NULL)
+  } else if (length(compound_name_col) > 1) {
+    warning("Multiple compound name columns found: ", 
+            paste(compound_name_col, collapse = ", "), 
+            ". Using the first one: ", compound_name_col[1])
+    compound_name_col <- compound_name_col[1]
+  }
+  
+  # Define possible original annotation column names
+  possible_annotation_cols <- c(
+    "Original.annotation",
+    "Original annotation",
+    "Original_Annotation",
+    "OriginalAnnotation",
+    "original_annotation",
+    "Original.Annotations",
+    "Original.Annotations",
+    "original.annotation",
+    "original Annotation"
+  )
+  
+  # Find the annotation column
+  annotation_col <- intersect(possible_annotation_cols, names(data))
+  
+  if (length(annotation_col) == 0) {
+    # No annotation column found, return NULL instead of stopping
+    warning("No original annotation column found. Please ensure your data has one of the following column names: ",
+            paste(possible_annotation_cols, collapse = ", "), ". Returning NULL.")
+    return(NULL)
+  } else if (length(annotation_col) > 1) {reposition_ether_lipids <- function(name) {
+    # This regex looks for "(O-xx:yy)" or "(P-xx:yy)" patterns and rearranges them into "-O(xx:yy)" or "-P(xx:yy)".
+    cleaned_name <- gsub("\\((O|P)-([0-9]+:[0-9]+)\\)", "-\\1(\\2)", name)
+    return(cleaned_name)
+  }
+  warning("Multiple original annotation columns found: ", 
+          paste(annotation_col, collapse = ", "), 
+          ". Using the first one: ", annotation_col[1])
+  annotation_col <- annotation_col[1]
+  }
+  
+  # If we reach this point, both columns are found, proceed as before
+  merged_info <- data %>%
+    group_by(.data[[compound_name_col]]) %>%
+    summarise(
+      merged_molecules = paste(.data[[annotation_col]], collapse = ", "),
+      count = n(),
+      .groups = "drop"
+    ) %>%
+    filter(count > 1) %>%
+    rename(Compound_Name = !!compound_name_col)
+  
+  return(merged_info)
+}
+
+
+
+
 
 #duplicated names have add _1, _2 and _3 depending on how many duplicates. 
 unique_compound_names <- function(data) {
@@ -160,6 +228,8 @@ unique_compound_names <- function(data) {
 }
 
 
+
+
 #merge duplicated names of the data
 merge_duplicates <- function(data) {
   # Ensure the first column is treated as the Compound Name
@@ -172,6 +242,9 @@ merge_duplicates <- function(data) {
   
   return(data_merged)
 }
+
+
+
 
 #duplicated names have add _1, _2 and _3 depending on how many duplicates. 
 unique_compound_names <- function(data) {
@@ -243,6 +316,12 @@ remove_ether_lipids <- function(name) {
   return(cleaned_name)
 }
 
+reposition_ether_lipids <- function(name) {
+  # This regex looks for "(O-xx:yy)" or "(P-xx:yy)" patterns and rearranges them into "-O(xx:yy)" or "-P(xx:yy)".
+  cleaned_name <- gsub("\\((O|P)-([0-9]+:[0-9]+)\\)", "-\\1(\\2)", name)
+  return(cleaned_name)
+}
+
 
 format_strings <- function(input_strings) {
   # Remove multiple spaces but preserve single spaces between lipid class and chain length
@@ -267,3 +346,18 @@ filter_data_by_pattern <- function(data) {
   
   return(filtered_data)
 }
+
+
+
+remove_patterned_rows <- function(data) {
+  # Check if data is a data frame and has at least one column
+  if (!is.data.frame(data) || ncol(data) < 1) {
+    stop("Input must be a data frame with at least one column.")
+  }
+  
+  # Identify rows that do not match the pattern ^.+\(\d+:\d+\)$
+  filtered_data <- data[!grepl("^.+\\(\\d+:\\d+\\)$", data[[1]]), ]
+  return(filtered_data)
+}
+
+

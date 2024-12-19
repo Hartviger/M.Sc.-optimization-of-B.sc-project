@@ -20,6 +20,7 @@ library(shinycssloaders)
 library(jsonlite)
 library("lipidomeR") # new
 library(colourpicker) # new
+library(shinycssloaders) # new
 
 
 
